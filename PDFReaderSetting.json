@@ -1,0 +1,12 @@
+{
+  "default_freetext_font_size": 7,
+  "default_highlight_color": [
+    1,
+    1,
+    0
+  ],
+  "default_highlight_opacity": 0.45,
+  "freetext_font_size_min": 4,
+  "freetext_font_size_max": 20,
+  "use_foxit_freetext": false
+}
