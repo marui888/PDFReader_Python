@@ -1,12 +1,24 @@
 {
   "default_freetext_font_size": 7,
   "default_highlight_color": [
-    1,
-    1,
-    0
+    1.0,
+    1.0,
+    0.0
   ],
   "default_highlight_opacity": 0.45,
   "freetext_font_size_min": 4,
   "freetext_font_size_max": 20,
+  "recent_files": [
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
+      "last_page_index": 202,
+      "last_opened_at": "2026-06-13T19:36:42+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM_annotated.pdf",
+      "last_page_index": 0,
+      "last_opened_at": "2026-06-13T19:21:08+08:00"
+    }
+  ],
   "use_foxit_freetext": false
 }

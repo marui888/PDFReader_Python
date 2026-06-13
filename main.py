@@ -122,6 +122,8 @@ class MainWindow(QMainWindow):
         self.default_freetext_font_size = 7
         self.default_highlight_color = (1, 1, 0)
         self.default_highlight_opacity = 0.45
+        self.recent_files: list[dict] = []
+        self.max_recent_files = 10
         self.load_app_settings()
         self.is_dirty = False
         self.current_annotations: list[AnnotationModel] = []
@@ -132,6 +134,7 @@ class MainWindow(QMainWindow):
         self.selected_annotation_id: str | None = None
         self.annotations_dock: QDockWidget | None = None
         self.annotations_tabs: QTabWidget | None = None
+        self.open_recent_menu = None
         self.annotations_table: QTableWidget | None = None
         self.properties_page: QWidget | None = None
         self.properties_layout: QVBoxLayout | None = None
@@ -233,6 +236,8 @@ class MainWindow(QMainWindow):
     def create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction(self.open_action)
+        self.open_recent_menu = file_menu.addMenu("Open Recent")
+        self.refresh_recent_files_menu()
         file_menu.addAction(self.close_action)
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
@@ -307,21 +312,26 @@ class MainWindow(QMainWindow):
         self.page_count_label.setText(f"/ {len(self.doc)}")
 
     def open_pdf(self) -> None:
-        if not self.confirm_unsaved_changes("open another PDF"):
-            return
-
         file_name, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF files (*.pdf)")
         if not file_name:
             return
 
+        self.open_pdf_path(Path(file_name), self.recent_page_index(Path(file_name)))
+
+    def open_pdf_path(self, path: Path, page_index: int = 0) -> None:
+        if not self.confirm_unsaved_changes("open another PDF"):
+            return
+
         try:
             if self.doc is not None:
+                self.update_current_recent_page()
                 self.doc.close()
-            self.doc = fitz.open(file_name)
-            self.pdf_path = Path(file_name)
-            self.page_index = 0
+            self.doc = fitz.open(path)
+            self.pdf_path = path
+            self.page_index = max(0, min(page_index, len(self.doc) - 1))
             self.clear_dirty()
             self.current_annotations = []
+            self.update_recent_file(path, self.page_index)
             self.render_page()
             self.update_actions()
         except Exception as exc:
@@ -333,6 +343,7 @@ class MainWindow(QMainWindow):
 
         self.cancel_add_tool()
         if self.doc is not None:
+            self.update_current_recent_page()
             self.doc.close()
 
         self.doc = None
@@ -408,6 +419,7 @@ class MainWindow(QMainWindow):
         self.page_index = target_index
         self.cancel_add_tool()
         self.render_page()
+        self.update_current_recent_page()
 
     def current_page(self) -> fitz.Page:
         if self.doc is None:
@@ -428,6 +440,7 @@ class MainWindow(QMainWindow):
             return
 
         self.use_foxit_freetext = bool(data.get("use_foxit_freetext", self.use_foxit_freetext))
+        self.recent_files = self.valid_recent_files(data.get("recent_files", []))
         color = data.get("default_highlight_color")
         if isinstance(color, list) and len(color) >= 3:
             try:
@@ -454,12 +467,120 @@ class MainWindow(QMainWindow):
             "default_highlight_opacity": self.default_highlight_opacity,
             "freetext_font_size_min": self.freetext_font_size_min,
             "freetext_font_size_max": self.freetext_font_size_max,
+            "recent_files": self.recent_files,
             "use_foxit_freetext": self.use_foxit_freetext,
         }
         self.settings_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
 
     def clamp_freetext_font_size(self, value: int) -> int:
         return max(self.freetext_font_size_min, min(self.freetext_font_size_max, int(value)))
+
+    def valid_recent_files(self, value) -> list[dict]:
+        if not isinstance(value, list):
+            return []
+
+        records: list[dict] = []
+        seen: set[str] = set()
+        for item in value:
+            if not isinstance(item, dict):
+                continue
+            path_text = item.get("path")
+            if not path_text:
+                continue
+            try:
+                path = str(Path(path_text))
+                page_index = max(0, int(item.get("last_page_index", 0)))
+            except (TypeError, ValueError):
+                continue
+            key = path.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            records.append(
+                {
+                    "path": path,
+                    "last_page_index": page_index,
+                    "last_opened_at": str(item.get("last_opened_at", "")),
+                }
+            )
+            if len(records) >= self.max_recent_files:
+                break
+        return records
+
+    def recent_file_index(self, path: Path) -> int | None:
+        key = str(path).lower()
+        for index, record in enumerate(self.recent_files):
+            if str(record.get("path", "")).lower() == key:
+                return index
+        return None
+
+    def recent_page_index(self, path: Path) -> int:
+        index = self.recent_file_index(path)
+        if index is None:
+            return 0
+        try:
+            return max(0, int(self.recent_files[index].get("last_page_index", 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def update_recent_file(self, path: Path, page_index: int | None = None) -> None:
+        index = self.recent_file_index(path)
+        record = self.recent_files.pop(index) if index is not None else {"path": str(path)}
+        record["path"] = str(path)
+        record["last_page_index"] = max(0, int(0 if page_index is None else page_index))
+        record["last_opened_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+        self.recent_files.insert(0, record)
+        self.recent_files = self.recent_files[: self.max_recent_files]
+        self.save_app_settings()
+        self.refresh_recent_files_menu()
+
+    def update_current_recent_page(self) -> None:
+        if self.doc is None or self.pdf_path is None:
+            return
+        index = self.recent_file_index(self.pdf_path)
+        if index is None:
+            self.update_recent_file(self.pdf_path, self.page_index)
+            return
+        self.recent_files[index]["last_page_index"] = self.page_index
+        self.save_app_settings()
+        self.refresh_recent_files_menu()
+
+    def refresh_recent_files_menu(self) -> None:
+        if self.open_recent_menu is None:
+            return
+
+        self.open_recent_menu.clear()
+        if not self.recent_files:
+            empty_action = self.open_recent_menu.addAction("(No Recent Files)")
+            empty_action.setEnabled(False)
+            return
+
+        for record in self.recent_files:
+            path = Path(str(record["path"]))
+            page_number = int(record.get("last_page_index", 0)) + 1
+            action = self.open_recent_menu.addAction(f"{path.name} - page {page_number}")
+            action.setToolTip(str(path))
+            action.triggered.connect(lambda checked=False, recent_path=path: self.open_recent_pdf(recent_path))
+
+        self.open_recent_menu.addSeparator()
+        clear_action = self.open_recent_menu.addAction("Clear Recent Files")
+        clear_action.triggered.connect(self.clear_recent_files)
+
+    def clear_recent_files(self) -> None:
+        self.recent_files = []
+        self.save_app_settings()
+        self.refresh_recent_files_menu()
+
+    def open_recent_pdf(self, path: Path) -> None:
+        if not path.exists():
+            QMessageBox.warning(self, "Open Recent", f"File not found:\n{path}")
+            index = self.recent_file_index(path)
+            if index is not None:
+                self.recent_files.pop(index)
+                self.save_app_settings()
+                self.refresh_recent_files_menu()
+            return
+        self.open_pdf_path(path, self.recent_page_index(path))
 
     def render_page(self, preserve_selection: bool = False) -> None:
         if self.doc is None:
@@ -1503,7 +1624,7 @@ class MainWindow(QMainWindow):
             self.annotations_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
             self.annotations_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
             self.annotations_table.setStyleSheet(
-                "QTableWidget::item:selected { background-color: #2f6fed; color: white; }"
+                "QTableWidget::item:selected { background-color: rgb(242, 242, 242); color: black; }"
             )
             self.annotations_table.itemSelectionChanged.connect(self.on_annotations_table_selection_changed)
 
@@ -2271,6 +2392,7 @@ class MainWindow(QMainWindow):
             self.pdf_path = Path(file_name)
             self.page_index = max(0, min(page_index, len(self.doc) - 1))
             self.clear_dirty()
+            self.update_recent_file(self.pdf_path, self.page_index)
             self.render_page()
             QMessageBox.information(self, "Saved", f"Saved to:\n{file_name}")
             return True
@@ -2284,6 +2406,7 @@ class MainWindow(QMainWindow):
         self.cancel_add_tool()
         self.page_index -= 1
         self.render_page()
+        self.update_current_recent_page()
 
     def next_page(self) -> None:
         if self.doc is None or self.page_index >= len(self.doc) - 1:
@@ -2291,6 +2414,7 @@ class MainWindow(QMainWindow):
         self.cancel_add_tool()
         self.page_index += 1
         self.render_page()
+        self.update_current_recent_page()
 
     def zoom_in(self) -> None:
         self.zoom = min(self.zoom + 0.25, 4.0)
@@ -2317,6 +2441,7 @@ class MainWindow(QMainWindow):
             return
         self.cancel_add_tool()
         if self.doc is not None:
+            self.update_current_recent_page()
             self.doc.close()
         super().closeEvent(event)
 
