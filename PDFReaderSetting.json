@@ -1,23 +1,44 @@
 {
   "default_freetext_font_size": 7,
   "default_highlight_color": [
-    1.0,
-    1.0,
+    0.0,
+    0.55,
     0.0
   ],
   "default_highlight_opacity": 0.45,
+  "extract_highlight_text_on_reindex": true,
   "freetext_font_size_min": 4,
   "freetext_font_size_max": 20,
   "recent_files": [
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
-      "last_page_index": 202,
-      "last_opened_at": "2026-06-13T19:36:42+08:00"
+      "last_page_index": 318,
+      "last_opened_at": "2026-06-14T05:50:18+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Communist Manifesto (Karl Marx, Friedrich Engels, David McLellan) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+      "last_page_index": 0,
+      "last_opened_at": "2026-06-14T04:08:35+08:00"
+    },
+    {
+      "path": "C:\\Users\\Admin\\AppData\\Local\\Temp\\pdfnote_index_jump_smoke.pdf",
+      "last_page_index": 0,
+      "last_opened_at": "2026-06-14T02:56:40+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
+      "last_page_index": 0,
+      "last_opened_at": "2026-06-14T02:09:58+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM_annotated.pdf",
+      "last_page_index": 78,
+      "last_opened_at": "2026-06-13T20:37:12+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Bill Gates - Source Code_ My Beginnings-Penguin (2025) \u8fd9\u4e0d\u662f\u526f\u672c_JOM.pdf",
       "last_page_index": 0,
-      "last_opened_at": "2026-06-13T19:21:08+08:00"
+      "last_opened_at": "2026-06-13T20:37:08+08:00"
     }
   ],
   "use_foxit_freetext": false

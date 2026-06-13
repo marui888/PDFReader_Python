@@ -12,6 +12,9 @@ PyMuPDF: PDF 渲染与标准注释读写
 QGraphicsView/QGraphicsScene: 页面显示、注释覆盖层、选中/拖拽
 SQLite: 注释索引、位置标记、属性标记查询
 
+1. 继续拆结构：把移动/resize/endpoint 回写逻辑拆成交互控制层。
+暂停拆结构，做 PDF 注释健壮性检查/审计日志，因为前面遇到过 damaged PDF 和 annotation 遍历异常。
+
 ====================****************=====================
 =========================================================
 
@@ -20,7 +23,130 @@ SQLite: 注释索引、位置标记、属性标记查询
 然后：多文档打开/切换/关闭
 然后：SQLite 注释索引
 
+6C-1：抽出 app/debug_tools.py
+6C-2：抽出保存服务 app/pdf_save_service.py
+6C-3：抽出审计 UI / Debug Log Dock
+6C-4：清理 MainWindow 中的 PDF 生命周期代码
+然后再做 SQLite 注释索引 / 查询面板
+
+下一步：6B-1 PDF 注释审计工具
+再下一步：保存前/保存后自动审计
+然后：继续拆移动/resize交互层
+
+6C：项目结构继续拆分 MainWindow
+7A：SQLite 注释索引
+7B：查询面板
+8A：多个 PDF 文档打开/切换
 =========================================================
+
+//mr:: 2026_06_14 05_29_38
+不合理的地方：
+
+删除索引，重新建立索引，完成后，会自动以 “All Type”的方式，查询条件为空，把所有的（500条，最多）注释
+自动填充到 Search 窗口。 
+
+Search 窗口 在手动点击 查询 前，应该是空的。
+
+
+//mr:: 2026_06_14 05_20_47
+
+问题应该解决了。
+
+1. 删除索引，如果search窗口之前打开过，应该”清空状态“。
+2. 索引的速度花较长的时间，可以理解，特别是我们现在做到是全量索引。希望在UI交互做一个动态的“等待”提示。
+
+//mr:: 2026_06_14 05_07_25
+
+这个数据不是属于“建立索引后，第一次查询所有高亮”： 
+05:06:30 Open started: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf
+05:06:30 Open loaded: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf pages=338
+05:06:30 Open completed: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf page=64
+05:06:57 Search annotations: keyword='' app_type='highlight' results=500 sqlite=2.9ms build=0.8ms ui=8.9ms total=12.6ms
+***********************************************************
+这个数据就是属于“建立索引后，第一次查询所有高亮”： 
+05:07:53 Clear annotation index completed
+05:08:08 Reindex current PDF started: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf extract_highlight_text=True
+05:08:33 Reindex current PDF completed: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf annotations=2560
+05:08:51 Search annotations: keyword='' app_type='highlight' results=500 sqlite=2.3ms build=1.0ms ui=10.4ms total=13.6ms
+05:09:37 Search annotations: keyword='' app_type='highlight' results=500 sqlite=2.7ms build=0.9ms ui=29307.8ms total=29311.4ms
+
+
+//mr:: 2026_06_14 04_53_11
+
+BUG已解决。
+
+打开 Extract highlighted page text when reindexing 后，建立索引的时间较长。
+打开查询窗口，第一次 搜索 所有 高亮，时间挺久。
+
+上面的过程能不能快点，或者 可以在其它线程执行，在UI显示显示一个“等待”效果的动态提示。
+
+
+//mr:: 2026_06_14 04_39_32
+BUG:
+Peter Hessler：River Town_JOM.pdf , 第7页，有两FreeText （A，B），在这两注释的“下面”文字（C,D)，
+同时有时 高亮 注释。
+
+当我打开 extract_highlight_text_on_reindex，建立索引后。
+打开Search窗口，只显示 高亮。 会发现：C的文字和A的一部分文字 被识别为 C 的 select-text。
+D的文字和B的一部分文字 被识别为 D 的 select-text。 混在一起了。
+
+//mr:: 2026_06_14 02_36_58
+1. 有个问题： 一条注释。我关心的注释是注释的类型，注释的文本内容。
+但注释作为一个PDF元素，有各种属性，一大堆。大部分不是用户关系的，
+用户再查询的时候，不会输入这些属性作为查询条件。
+索引过程中，读取一个注释时，应该把哪些“属性”放入到SQLite中呢？
+
+//mr:: 2026_06_14 02_31_01
+
+1. SQLite是文件数据库，每次索引的结果保存在内存中吧？
+2. “如果 PDF 注释变了，需要重新索引或增量更新索引”。假如，本次索引的结果已经有了，在内存中。
+我现在修改了一条注释，“新索引或增量更新索引” 不会把所有注释又重新读取建立索引吧？
+
+
+=========================================================
+
+//mr:: 2026_06_14 01_49_50
+
+
+//mr:: 2026_06_13 21_52_46
+
+A软件指我的软件。B软件指Foxit阅读器。
+
+同一个文件，同一页的FreeText注释，渲染的位置有差异：
+
+1. A软件渲染的FreeText的文字内容的位置 均稍微 高于B软件渲染的位置。不算太多，但肉眼明显可见。
+1.1 每个FreeText注释，被选中时，出现的矩形，有8个handles在这个矩形周边。A软件中文字内容贴在这个矩形的左下方。
+B软件中文字内容贴在这个矩形的左上方。
+
+2. A软件，B软件选择同样的字号7。A软件看到的字要大一些，所以，同一个FreeText注释，
+A软件中时两行文字，B软件是一行文字。
+
+3. A软件中，调整字号时。例如：原来是 宋体，9号。 调小字号时，字体也改变了。自动改变的。
+保存后，用B软件打开，字体也变了。（或者说，A软件，B软件在字号相同的情况下，选择了不同的字体，不能保证字体一致）
+
+3.1 仔细看了一下。B软件选择为 宋体， 用 A软件修改了 字号 ，保存。B软件再打开，从属性页看，字号变了，字体属性还是宋体，但渲染
+处的实际字体样式 一定 不是 宋体了。就是说：A软件不改动 字体，B软件显示的字体效果已经变化了。
+
+4. 删除注释时，有时有“QGraphicsScene::removeItem: item 0x2718c9c6e50's scene (0x0) is different from this scene (0x2718d8366e0)”
+这个信息在控制台出现。这是出错了吗？
+
+5. 还有一个：拆分项目文件的过程中，我们第一次遇到“SaveIncre，Save”问题。会不会是拆分后，影响到了各种数据的“状态一致性”。
+
+
+
+
+这些渲染细节的不一致性，是否和造成两个软件计算出的渲染有关的细节有差异，以致于在特定情况下，这个差异
+违背了某种图形规则。
+是否和我们遇到的SaveIncre，Save的问题有关。供参看。
+
+//mr:: 2026_06_13 20_50_40
+
+Peter Hessler：River Town_JOM 这个文件，我把最原始的版本考到 pdfdoc目录，
+用我们的APP， 在203页，删出箭头注释，添加Square注释，然后保存（没有提示增量保存不行）
+然后用Fixit打开，就报“文件已经损坏”错误。
+但可以再次用我们的APP打开它。 
+
+
 //mr:: 2026_06_13 19_19_43
 
 拆分原则：
@@ -108,8 +234,6 @@ annotation_items.py
 
 一个Square框，所框住的区域，如果有高亮注释，这个注释可以被选中，
 另一个Square框，所框住的区域，如果有高亮注释，这个注释不可以被选中，就像不“挡住了”似的。
-
-
 
 
 //mr:: 2026_06_13 04_43_39

@@ -1,14 +1,36 @@
-import json
+import os
 import re
+import gc
+import shutil
 import sys
-from dataclasses import dataclass
+import tempfile
 from datetime import datetime
 from math import atan2, cos, pi, sin
 from pathlib import Path
 
 import pymupdf as fitz
-from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
-from PySide6.QtGui import QAction, QBrush, QColor, QFont, QImage, QPainter, QPen, QPixmap, QPolygonF
+from app.annotation_index import AnnotationIndex
+from app.annotation_items import AnnotationItemRenderer
+from app.annotation_list import AnnotationListWidget
+from app.annotation_properties import AnnotationPropertiesWidget
+from app.annotation_repository import AnnotationRepository
+from app.annotation_search import AnnotationSearchWidget
+from app.annotation_selection import AnnotationSelectionRenderer
+from app.index_worker import ReindexWorker
+from app.models import (
+    ANNOTATION_COLORS,
+    DRAGGABLE_APP_TYPES,
+    EDITABLE_APP_TYPES,
+    AnnotationModel,
+)
+from app.pdf_canvas import AnnotationScene, PdfCanvasView
+from app.pdf_audit import audit_current_page as run_audit_current_page
+from app.pdf_audit import audit_document_summary as run_audit_document_summary
+from app.pdf_audit import format_audit_report
+from app.pdf_audit import report_has_errors
+from app.settings import AppSettings, load_settings, save_settings, settings_path
+from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, QThread, Slot
+from PySide6.QtGui import QAction, QBrush, QColor, QImage, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -20,99 +42,23 @@ from PySide6.QtWidgets import (
     QFileDialog,
     QGraphicsItem,
     QGraphicsPixmapItem,
-    QGraphicsScene,
-    QGraphicsView,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
     QSpinBox,
-    QTableWidget,
-    QTableWidgetItem,
     QTabWidget,
     QToolBar,
     QVBoxLayout,
-    QWidget,
 )
-
-
-SUPPORTED_APP_TYPES = {"highlight", "freetext", "square", "arrow"}
-DRAGGABLE_APP_TYPES = {"freetext", "square", "arrow"}
-EDITABLE_APP_TYPES = {"freetext", "square", "arrow"}
-ANNOTATION_COLORS = {
-    "Red": (1, 0, 0),
-    "Black": (0, 0, 0),
-    "Blue": (0, 0, 1),
-    "Green": (0, 0.55, 0),
-    "Yellow": (1, 0.85, 0),
-}
-
-
-@dataclass
-class AnnotationModel:
-    id: str
-    xref: int
-    page_index: int
-    pdf_type: str
-    app_type: str
-    rect: fitz.Rect
-    text: str
-    color: tuple | None
-    border_width: float | None
-    font_size: float | None
-    opacity: float | None
-    quad_points: list[tuple[float, float]]
-    line_start: tuple[float, float] | None
-    line_end: tuple[float, float] | None
-    line_ending: str
-    is_supported: bool
-    dirty: bool = False
-    deleted: bool = False
-    source: str = "pdf"
-
-
-class PdfCanvasView(QGraphicsView):
-    def __init__(self) -> None:
-        super().__init__()
-        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setBackgroundBrush(Qt.GlobalColor.darkGray)
-        self.setDragMode(QGraphicsView.DragMode.NoDrag)
-        self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
-        self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
-        self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
-
-
-class AnnotationScene(QGraphicsScene):
-    def __init__(self, owner: "MainWindow") -> None:
-        super().__init__(owner)
-        self.owner = owner
-
-    def mousePressEvent(self, event) -> None:
-        if self.owner.on_tool_mouse_press(event.scenePos()):
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:
-        if self.owner.on_tool_mouse_move(event.scenePos()):
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:
-        if self.owner.on_tool_mouse_release(event.scenePos()):
-            return
-        super().mouseReleaseEvent(event)
-        self.owner.on_scene_mouse_release()
-
-    def mouseDoubleClickEvent(self, event) -> None:
-        super().mouseDoubleClickEvent(event)
-        self.owner.on_scene_mouse_double_click()
 
 
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self.doc: fitz.Document | None = None
+        self.annotation_repo: AnnotationRepository | None = None
         self.pdf_path: Path | None = None
         self.page_index = 0
         self.zoom = 1.5
@@ -122,8 +68,11 @@ class MainWindow(QMainWindow):
         self.default_freetext_font_size = 7
         self.default_highlight_color = (1, 1, 0)
         self.default_highlight_opacity = 0.45
+        self.extract_highlight_text_on_reindex = False
         self.recent_files: list[dict] = []
         self.max_recent_files = 10
+        self.debug_log: list[str] = []
+        self.annotation_index = AnnotationIndex(self.index_path())
         self.load_app_settings()
         self.is_dirty = False
         self.current_annotations: list[AnnotationModel] = []
@@ -134,14 +83,21 @@ class MainWindow(QMainWindow):
         self.selected_annotation_id: str | None = None
         self.annotations_dock: QDockWidget | None = None
         self.annotations_tabs: QTabWidget | None = None
+        self.debug_log_dock: QDockWidget | None = None
+        self.debug_log_text: QPlainTextEdit | None = None
+        self.annotation_search_dock: QDockWidget | None = None
+        self.annotation_search_widget: AnnotationSearchWidget | None = None
+        self.annotation_search_restore_geometry = None
+        self.annotation_search_maximized = False
+        self.reindex_thread: QThread | None = None
+        self.reindex_worker: ReindexWorker | None = None
+        self.reindex_pdf_path: Path | None = None
         self.open_recent_menu = None
-        self.annotations_table: QTableWidget | None = None
-        self.properties_page: QWidget | None = None
-        self.properties_layout: QVBoxLayout | None = None
+        self.annotations_table: AnnotationListWidget | None = None
+        self.properties_page: AnnotationPropertiesWidget | None = None
         self.updating_page_spin = False
         self.updating_table_selection = False
         self.updating_scene_selection = False
-        self.updating_properties_panel = False
         self.applying_property_change = False
         self.active_tool: str | None = None
         self.tool_start_scene_pos: QPointF | None = None
@@ -176,6 +132,9 @@ class MainWindow(QMainWindow):
 
         self.save_action = QAction("Save", self)
         self.save_action.triggered.connect(self.save)
+
+        self.save_incremental_action = QAction("Save Incremental", self)
+        self.save_incremental_action.triggered.connect(self.save_incremental)
 
         self.save_as_action = QAction("Save As", self)
         self.save_as_action.triggered.connect(self.save_as)
@@ -230,8 +189,29 @@ class MainWindow(QMainWindow):
         self.add_arrow_action.setCheckable(True)
         self.add_arrow_action.triggered.connect(self.add_arrow)
 
-        self.show_annotations_action = QAction("Current Page Annotations", self)
+        self.show_annotations_action = QAction("Annotations", self)
         self.show_annotations_action.triggered.connect(self.show_current_page_annotations)
+
+        self.audit_current_page_action = QAction("Audit Current Page", self)
+        self.audit_current_page_action.triggered.connect(self.audit_current_page)
+
+        self.audit_document_summary_action = QAction("Audit Document Summary", self)
+        self.audit_document_summary_action.triggered.connect(self.audit_document_summary)
+
+        self.reindex_current_pdf_action = QAction("Reindex Current PDF", self)
+        self.reindex_current_pdf_action.triggered.connect(self.reindex_current_pdf)
+
+        self.clear_annotation_index_action = QAction("Clear Annotation Index", self)
+        self.clear_annotation_index_action.triggered.connect(self.clear_annotation_index)
+
+        self.search_annotations_action = QAction("Search Annotations", self)
+        self.search_annotations_action.triggered.connect(self.show_annotation_search)
+
+        self.debug_log_action = QAction("Debug Log", self)
+        self.debug_log_action.triggered.connect(self.show_debug_log)
+
+        self.debug_current_page_state_action = QAction("Debug Current Page State", self)
+        self.debug_current_page_state_action.triggered.connect(self.debug_current_page_state)
 
     def create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("File")
@@ -245,6 +225,8 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.settings_action)
         file_menu.addSeparator()
         file_menu.addAction(self.exit_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.save_incremental_action)
 
         edit_menu = self.menuBar().addMenu("Edit")
         edit_menu.addAction(self.edit_annotation_action)
@@ -252,6 +234,16 @@ class MainWindow(QMainWindow):
 
         tools_menu = self.menuBar().addMenu("Tools")
         tools_menu.addAction(self.show_annotations_action)
+        tools_menu.addSeparator()
+        tools_menu.addAction(self.audit_current_page_action)
+        tools_menu.addAction(self.audit_document_summary_action)
+        tools_menu.addSeparator()
+        tools_menu.addAction(self.reindex_current_pdf_action)
+        tools_menu.addAction(self.clear_annotation_index_action)
+        tools_menu.addAction(self.search_annotations_action)
+        tools_menu.addSeparator()
+        tools_menu.addAction(self.debug_current_page_state_action)
+        tools_menu.addAction(self.debug_log_action)
 
     def create_toolbar(self) -> None:
         toolbar = QToolBar("Main")
@@ -278,9 +270,11 @@ class MainWindow(QMainWindow):
 
     def update_actions(self) -> None:
         has_doc = self.doc is not None
+        is_reindexing = self.reindex_thread is not None
         for action in (
             self.close_action,
             self.save_action,
+            self.save_incremental_action,
             self.save_as_action,
             self.prev_action,
             self.next_action,
@@ -291,6 +285,10 @@ class MainWindow(QMainWindow):
             self.add_highlight_action,
             self.add_arrow_action,
             self.show_annotations_action,
+            self.audit_current_page_action,
+            self.audit_document_summary_action,
+            self.debug_current_page_state_action,
+            self.reindex_current_pdf_action,
         ):
             action.setEnabled(has_doc)
         self.delete_annotation_action.setEnabled(has_doc and self.selected_annotation_id is not None)
@@ -310,6 +308,18 @@ class MainWindow(QMainWindow):
         self.page_spin.setEnabled(True)
         self.page_spin.setMaximum(len(self.doc))
         self.page_count_label.setText(f"/ {len(self.doc)}")
+        if is_reindexing:
+            for action in (
+                self.open_action,
+                self.close_action,
+                self.save_action,
+                self.save_incremental_action,
+                self.save_as_action,
+                self.reindex_current_pdf_action,
+                self.clear_annotation_index_action,
+                self.search_annotations_action,
+            ):
+                action.setEnabled(False)
 
     def open_pdf(self) -> None:
         file_name, _ = QFileDialog.getOpenFileName(self, "Open PDF", "", "PDF files (*.pdf)")
@@ -320,13 +330,23 @@ class MainWindow(QMainWindow):
 
     def open_pdf_path(self, path: Path, page_index: int = 0) -> None:
         if not self.confirm_unsaved_changes("open another PDF"):
+            self.log_debug(f"Open canceled by unsaved changes prompt: {path}")
             return
 
         try:
+            self.log_debug(f"Open started: {path}")
+            new_doc = fitz.open(path)
+            if len(new_doc) == 0:
+                new_doc.close()
+                raise RuntimeError(
+                    "This PDF has no readable pages. It may be damaged or have a broken page tree."
+                )
+            self.log_debug(f"Open loaded: {path} pages={len(new_doc)}")
             if self.doc is not None:
                 self.update_current_recent_page()
                 self.doc.close()
-            self.doc = fitz.open(path)
+            self.doc = new_doc
+            self.annotation_repo = AnnotationRepository(self.doc)
             self.pdf_path = path
             self.page_index = max(0, min(page_index, len(self.doc) - 1))
             self.clear_dirty()
@@ -334,19 +354,25 @@ class MainWindow(QMainWindow):
             self.update_recent_file(path, self.page_index)
             self.render_page()
             self.update_actions()
+            self.refresh_annotation_search_status()
+            self.log_debug(f"Open completed: {path} page={self.page_index + 1}")
         except Exception as exc:
+            self.log_debug(f"Open failed: {path}: {exc}")
             self.show_error("Open failed", exc)
 
     def close_pdf(self) -> None:
         if not self.confirm_unsaved_changes("close this PDF"):
+            self.log_debug("Close canceled by unsaved changes prompt")
             return
 
         self.cancel_add_tool()
+        closed_path = self.pdf_path
         if self.doc is not None:
             self.update_current_recent_page()
             self.doc.close()
 
         self.doc = None
+        self.annotation_repo = None
         self.pdf_path = None
         self.page_index = 0
         self.clear_dirty()
@@ -359,8 +385,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("No PDF open")
         self.refresh_annotations_table()
         self.refresh_properties_panel()
+        self.refresh_annotation_search_status()
         self.sync_page_spin()
         self.update_actions()
+        self.log_debug(f"Close completed: {closed_path}")
 
     def sync_page_spin(self) -> None:
         self.updating_page_spin = True
@@ -427,85 +455,37 @@ class MainWindow(QMainWindow):
         return self.doc[self.page_index]
 
     def settings_path(self) -> Path:
-        return Path(__file__).with_name("PDFReaderSetting.json")
+        return settings_path(__file__)
+
+    def index_path(self) -> Path:
+        return Path(__file__).with_name("PDFReaderIndex.sqlite3")
 
     def load_app_settings(self) -> None:
-        path = self.settings_path()
-        if not path.exists():
-            return
-
-        try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except Exception:
-            return
-
-        self.use_foxit_freetext = bool(data.get("use_foxit_freetext", self.use_foxit_freetext))
-        self.recent_files = self.valid_recent_files(data.get("recent_files", []))
-        color = data.get("default_highlight_color")
-        if isinstance(color, list) and len(color) >= 3:
-            try:
-                self.default_highlight_color = tuple(max(0.0, min(1.0, float(value))) for value in color[:3])
-            except (TypeError, ValueError):
-                pass
-        try:
-            self.freetext_font_size_min = max(1, int(data.get("freetext_font_size_min", self.freetext_font_size_min)))
-            self.freetext_font_size_max = max(
-                self.freetext_font_size_min,
-                int(data.get("freetext_font_size_max", self.freetext_font_size_max)),
-            )
-            font_size = int(data.get("default_freetext_font_size", self.default_freetext_font_size))
-            self.default_freetext_font_size = self.clamp_freetext_font_size(font_size)
-            opacity = float(data.get("default_highlight_opacity", self.default_highlight_opacity))
-            self.default_highlight_opacity = max(0.05, min(1.0, opacity))
-        except (TypeError, ValueError):
-            pass
+        settings = load_settings(self.settings_path(), self.max_recent_files)
+        self.use_foxit_freetext = settings.use_foxit_freetext
+        self.freetext_font_size_min = settings.freetext_font_size_min
+        self.freetext_font_size_max = settings.freetext_font_size_max
+        self.default_freetext_font_size = settings.default_freetext_font_size
+        self.default_highlight_color = settings.default_highlight_color
+        self.default_highlight_opacity = settings.default_highlight_opacity
+        self.extract_highlight_text_on_reindex = settings.extract_highlight_text_on_reindex
+        self.recent_files = settings.recent_files
 
     def save_app_settings(self) -> None:
-        data = {
-            "default_freetext_font_size": self.default_freetext_font_size,
-            "default_highlight_color": list(self.default_highlight_color),
-            "default_highlight_opacity": self.default_highlight_opacity,
-            "freetext_font_size_min": self.freetext_font_size_min,
-            "freetext_font_size_max": self.freetext_font_size_max,
-            "recent_files": self.recent_files,
-            "use_foxit_freetext": self.use_foxit_freetext,
-        }
-        self.settings_path().write_text(json.dumps(data, indent=2), encoding="utf-8")
+        settings = AppSettings(
+            use_foxit_freetext=self.use_foxit_freetext,
+            freetext_font_size_min=self.freetext_font_size_min,
+            freetext_font_size_max=self.freetext_font_size_max,
+            default_freetext_font_size=self.default_freetext_font_size,
+            default_highlight_color=self.default_highlight_color,
+            default_highlight_opacity=self.default_highlight_opacity,
+            extract_highlight_text_on_reindex=self.extract_highlight_text_on_reindex,
+            recent_files=self.recent_files,
+        )
+        save_settings(self.settings_path(), settings)
 
     def clamp_freetext_font_size(self, value: int) -> int:
         return max(self.freetext_font_size_min, min(self.freetext_font_size_max, int(value)))
-
-    def valid_recent_files(self, value) -> list[dict]:
-        if not isinstance(value, list):
-            return []
-
-        records: list[dict] = []
-        seen: set[str] = set()
-        for item in value:
-            if not isinstance(item, dict):
-                continue
-            path_text = item.get("path")
-            if not path_text:
-                continue
-            try:
-                path = str(Path(path_text))
-                page_index = max(0, int(item.get("last_page_index", 0)))
-            except (TypeError, ValueError):
-                continue
-            key = path.lower()
-            if key in seen:
-                continue
-            seen.add(key)
-            records.append(
-                {
-                    "path": path,
-                    "last_page_index": page_index,
-                    "last_opened_at": str(item.get("last_opened_at", "")),
-                }
-            )
-            if len(records) >= self.max_recent_files:
-                break
-        return records
 
     def recent_file_index(self, path: Path) -> int | None:
         key = str(path).lower()
@@ -617,18 +597,18 @@ class MainWindow(QMainWindow):
         self.clear_annotation_items()
         self.annotation_model_map = {model.id: model for model in self.current_annotations}
         self.selected_annotation_id = None
+        renderer = AnnotationItemRenderer(
+            self.scene,
+            self.zoom,
+            self.default_freetext_font_size,
+            self.default_highlight_opacity,
+            self.add_annotation_item,
+            self.add_hit_item,
+        )
         for model in self.current_annotations:
             if not model.is_supported:
                 continue
-
-            if model.app_type == "highlight":
-                self.add_highlight_item(model)
-            elif model.app_type == "freetext":
-                self.add_freetext_item(model)
-            elif model.app_type == "square":
-                self.add_square_item(model)
-            elif model.app_type == "arrow":
-                self.add_arrow_item(model)
+            renderer.render(model)
 
     def clear_annotation_items(self) -> None:
         self.clear_selection_items()
@@ -664,90 +644,6 @@ class MainWindow(QMainWindow):
 
     def is_draggable_model(self, model: AnnotationModel) -> bool:
         return model.app_type in DRAGGABLE_APP_TYPES
-
-    def add_highlight_item(self, model: AnnotationModel) -> None:
-        color = self.pdf_color(model.color, QColor(255, 235, 59))
-        opacity = model.opacity if model.opacity is not None else self.default_highlight_opacity
-        color.setAlpha(max(20, min(255, int(255 * opacity))))
-
-        quad_polygons = self.highlight_polygons(model)
-        if quad_polygons:
-            for polygon in quad_polygons:
-                item = self.scene.addPolygon(polygon, QPen(Qt.PenStyle.NoPen), QBrush(color))
-                self.add_annotation_item(item, model)
-                self.add_highlight_hit_item(polygon, model)
-            return
-
-        rect = self.scene_rect(model.rect)
-        item = self.scene.addRect(rect, QPen(Qt.PenStyle.NoPen), QBrush(color))
-        self.add_annotation_item(item, model)
-        self.add_rect_hit_item(rect, model)
-
-    def add_freetext_item(self, model: AnnotationModel) -> None:
-        rect = self.scene_rect(model.rect)
-        text_item = self.scene.addText(model.text)
-        text_item.setDefaultTextColor(self.pdf_color(model.color, QColor(255, 0, 0)))
-        font_size = model.font_size or self.default_freetext_font_size
-        text_item.setFont(QFont("Arial", max(1, int(font_size * self.zoom))))
-        text_item.setTextWidth(rect.width())
-        text_item.setPos(rect.topLeft())
-        self.add_annotation_item(text_item, model)
-        self.add_rect_hit_item(rect, model)
-
-    def add_square_item(self, model: AnnotationModel) -> None:
-        rect = self.scene_rect(model.rect)
-        color = self.pdf_color(model.color, QColor(255, 0, 0))
-        width = max(1.0, (model.border_width or 1.0) * self.zoom)
-        item = self.scene.addRect(rect, QPen(color, width), QBrush(Qt.BrushStyle.NoBrush))
-        self.add_annotation_item(item, model)
-        item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
-        self.add_square_hit_item(rect, model)
-
-    def add_arrow_item(self, model: AnnotationModel) -> None:
-        start, end = self.arrow_points(model)
-        color = self.pdf_color(model.color, QColor(255, 0, 0))
-        width = max(1.0, (model.border_width or 1.0) * self.zoom)
-        pen = QPen(color, width)
-        line_item = self.scene.addLine(QLineF(start, end), pen)
-        self.add_annotation_item(line_item, model)
-        self.add_line_hit_item(start, end, model)
-
-        start_arrow, end_arrow = self.arrow_head_flags(model.line_ending)
-        size = max(8.0, 9.0 * self.zoom)
-        if start_arrow:
-            self.add_arrow_head_lines(end, start, size, pen, model)
-        if end_arrow:
-            self.add_arrow_head_lines(start, end, size, pen, model)
-
-    def add_rect_hit_item(self, rect: QRectF, model: AnnotationModel) -> None:
-        margin = max(4.0, 4.0 * self.zoom)
-        hit_rect = rect.adjusted(-margin, -margin, margin, margin)
-        item = self.scene.addRect(hit_rect, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0)))
-        self.add_hit_item(item, model)
-
-    def add_square_hit_item(self, rect: QRectF, model: AnnotationModel) -> None:
-        width = max(8.0, ((model.border_width or 1.0) * self.zoom) + 6.0)
-        pen = QPen(QColor(0, 0, 0), width)
-        lines = (
-            QLineF(rect.topLeft(), rect.topRight()),
-            QLineF(rect.topRight(), rect.bottomRight()),
-            QLineF(rect.bottomRight(), rect.bottomLeft()),
-            QLineF(rect.bottomLeft(), rect.topLeft()),
-        )
-        for line in lines:
-            item = self.scene.addLine(line, pen)
-            self.add_hit_item(item, model)
-
-    def add_highlight_hit_item(self, polygon: QPolygonF, model: AnnotationModel) -> None:
-        margin = max(5.0, 5.0 * self.zoom)
-        hit_rect = polygon.boundingRect().adjusted(-margin, -margin, margin, margin)
-        item = self.scene.addRect(hit_rect, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0)))
-        self.add_hit_item(item, model)
-
-    def add_line_hit_item(self, start: QPointF, end: QPointF, model: AnnotationModel) -> None:
-        width = max(12.0, 10.0 * self.zoom)
-        item = self.scene.addLine(QLineF(start, end), QPen(QColor(0, 0, 0), width))
-        self.add_hit_item(item, model)
 
     def scene_rect(self, rect: fitz.Rect) -> QRectF:
         return QRectF(
@@ -1111,11 +1007,6 @@ class MainWindow(QMainWindow):
             self.scene.removeItem(item)
         self.selection_items.clear()
 
-    def add_selection_item(self, item: QGraphicsItem) -> None:
-        item.setZValue(20)
-        item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
-        self.selection_items.append(item)
-
     def sync_scene_selection(self) -> None:
         self.updating_scene_selection = True
         try:
@@ -1132,13 +1023,7 @@ class MainWindow(QMainWindow):
 
         self.updating_table_selection = True
         try:
-            self.annotations_table.clearSelection()
-            if self.selected_annotation_id is None:
-                return
-            for row, model in enumerate(self.current_annotations):
-                if model.id == self.selected_annotation_id:
-                    self.annotations_table.selectRow(row)
-                    break
+            self.annotations_table.select_annotation(self.selected_annotation_id, self.current_annotations)
         finally:
             self.updating_table_selection = False
 
@@ -1146,12 +1031,11 @@ class MainWindow(QMainWindow):
         if self.updating_table_selection or self.annotations_table is None:
             return
 
-        rows = self.annotations_table.selectionModel().selectedRows()
-        if not rows:
+        row = self.annotations_table.selected_row()
+        if row is None:
             self.select_annotation(None)
             return
 
-        row = rows[0].row()
         if row < 0 or row >= len(self.current_annotations):
             self.select_annotation(None)
             return
@@ -1206,12 +1090,9 @@ class MainWindow(QMainWindow):
             self.show_error("Delete annotation failed", exc)
 
     def find_page_annotation_by_xref(self, page: fitz.Page, xref: int) -> fitz.Annot | None:
-        annot = page.first_annot
-        while annot is not None:
-            if annot.xref == xref:
-                return annot
-            annot = annot.next
-        return None
+        if self.annotation_repo is None:
+            return None
+        return self.annotation_repo.find_page_annotation_by_xref(page, xref)
 
     def edit_selected_annotation(self) -> None:
         if self.doc is None or self.selected_annotation_id is None:
@@ -1351,119 +1232,8 @@ class MainWindow(QMainWindow):
         return best_name
 
     def draw_selection_for_model(self, model: AnnotationModel) -> None:
-        if model.app_type == "freetext":
-            self.draw_freetext_selection(model)
-        elif model.app_type == "square":
-            self.draw_square_selection(model)
-        elif model.app_type == "highlight":
-            self.draw_highlight_selection(model)
-        elif model.app_type == "arrow":
-            self.draw_arrow_selection(model)
-
-    def draw_rect_selection(self, rect: QRectF, color: QColor, width: float, handles: bool) -> None:
-        item = self.scene.addRect(rect, QPen(color, width), QBrush(Qt.BrushStyle.NoBrush))
-        self.add_selection_item(item)
-        if handles:
-            self.add_corner_handles(rect, color)
-
-    def draw_square_selection(self, model: AnnotationModel) -> None:
-        rect = self.scene_rect(model.rect)
-        self.draw_rect_selection(rect, QColor(0, 0, 0), 3.0, handles=False)
-        self.add_rect_resize_handles(rect, model)
-
-    def draw_freetext_selection(self, model: AnnotationModel) -> None:
-        rect = self.scene_rect(model.rect)
-        self.draw_rect_selection(rect, QColor(0, 0, 0), 1.2, handles=False)
-        self.add_rect_resize_handles(rect, model)
-
-    def add_corner_handles(self, rect: QRectF, color: QColor) -> None:
-        size = max(5.0, 5.0 * self.zoom)
-        points = (rect.topLeft(), rect.topRight(), rect.bottomRight(), rect.bottomLeft())
-        for point in points:
-            handle_rect = QRectF(point.x() - size / 2, point.y() - size / 2, size, size)
-            item = self.scene.addRect(handle_rect, QPen(color, 1), QBrush(QColor(255, 255, 255)))
-            self.add_selection_item(item)
-
-    def add_rect_resize_handles(self, rect: QRectF, model: AnnotationModel) -> None:
-        size = max(6.0, 5.0 * self.zoom)
-        handles = (
-            ("top-left", rect.topLeft(), Qt.CursorShape.SizeFDiagCursor),
-            ("top", QPointF(rect.center().x(), rect.top()), Qt.CursorShape.SizeVerCursor),
-            ("top-right", rect.topRight(), Qt.CursorShape.SizeBDiagCursor),
-            ("right", QPointF(rect.right(), rect.center().y()), Qt.CursorShape.SizeHorCursor),
-            ("bottom-right", rect.bottomRight(), Qt.CursorShape.SizeFDiagCursor),
-            ("bottom", QPointF(rect.center().x(), rect.bottom()), Qt.CursorShape.SizeVerCursor),
-            ("bottom-left", rect.bottomLeft(), Qt.CursorShape.SizeBDiagCursor),
-            ("left", QPointF(rect.left(), rect.center().y()), Qt.CursorShape.SizeHorCursor),
-        )
-        for name, point, cursor in handles:
-            handle_rect = QRectF(point.x() - size / 2, point.y() - size / 2, size, size)
-            item = self.scene.addRect(handle_rect, QPen(QColor(0, 0, 0), 1), QBrush(QColor(255, 255, 255)))
-            item.setZValue(25)
-            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
-            item.setCursor(cursor)
-            item.setData(0, model.id)
-            item.setData(2, "resize-handle")
-            item.setData(3, model.id)
-            item.setData(4, name)
-            item.setData(5, item.pos())
-            self.selection_items.append(item)
-
-    def draw_highlight_selection(self, model: AnnotationModel) -> None:
-        fill = QColor(92, 54, 24, 145)
-        border = QPen(QColor(220, 0, 0), 1.0)
-        border.setStyle(Qt.PenStyle.DashLine)
-        polygons = self.highlight_polygons(model)
-        if polygons:
-            for polygon in polygons:
-                item = self.scene.addPolygon(polygon, border, QBrush(fill))
-                self.add_selection_item(item)
-            return
-
-        item = self.scene.addRect(self.scene_rect(model.rect), border, QBrush(fill))
-        self.add_selection_item(item)
-
-    def draw_arrow_selection(self, model: AnnotationModel) -> None:
-        start, end = self.arrow_points(model)
-        color = self.pdf_color(model.color, QColor(255, 0, 0))
-        base_width = max(1.0, (model.border_width or 1.0) * self.zoom)
-        pen = QPen(color, base_width + max(1.0, 1.0 * self.zoom))
-        item = self.scene.addLine(QLineF(start, end), pen)
-        self.add_selection_item(item)
-
-        start_arrow, end_arrow = self.arrow_head_flags(model.line_ending)
-        size = max(8.0, 9.0 * self.zoom)
-        if start_arrow:
-            self.add_selection_arrow_head_lines(end, start, size, pen)
-        if end_arrow:
-            self.add_selection_arrow_head_lines(start, end, size, pen)
-        self.add_endpoint_handles(start, end, QColor(0, 0, 0))
-
-    def add_selection_arrow_head_lines(self, start: QPointF, end: QPointF, size: float, pen: QPen) -> None:
-        left, right = self.arrow_head_points(start, end, size)
-        for point in (left, right):
-            item = self.scene.addLine(QLineF(end, point), pen)
-            self.add_selection_item(item)
-
-    def add_endpoint_handles(self, start: QPointF, end: QPointF, color: QColor) -> None:
-        size = max(5.0, 5.0 * self.zoom)
-        if self.selected_annotation_id is None:
-            return
-
-        for name, point in (("start", start), ("end", end)):
-            rect = QRectF(point.x() - size / 2, point.y() - size / 2, size, size)
-            item = self.scene.addRect(rect, QPen(color, 1), QBrush(QColor(255, 255, 255)))
-            item.setZValue(25)
-            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
-            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
-            item.setCursor(Qt.CursorShape.SizeAllCursor)
-            item.setData(0, self.selected_annotation_id)
-            item.setData(2, "arrow-endpoint-handle")
-            item.setData(3, self.selected_annotation_id)
-            item.setData(4, name)
-            item.setData(5, item.pos())
-            self.selection_items.append(item)
+        renderer = AnnotationSelectionRenderer(self.scene, self.zoom)
+        self.selection_items.extend(renderer.draw(model))
 
     def center_on_annotation(self, model: AnnotationModel) -> None:
         if model.app_type == "arrow":
@@ -1486,126 +1256,13 @@ class MainWindow(QMainWindow):
         )
 
     def load_page_annotations(self, page_index: int) -> list[AnnotationModel]:
-        if self.doc is None:
+        if self.annotation_repo is None:
             return []
-
-        page = self.doc[page_index]
-        models: list[AnnotationModel] = []
-        annot = page.first_annot
-        while annot is not None:
-            models.append(self.annotation_to_model(page_index, annot))
-            annot = annot.next
-        return models
-
-    def annotation_to_model(self, page_index: int, annot: fitz.Annot) -> AnnotationModel:
-        pdf_type = annot.type[1] if annot.type and len(annot.type) > 1 else str(annot.type[0])
-        app_type = self.classify_annotation(annot, pdf_type)
-        color = self.annotation_color(annot)
-        border_width = self.annotation_border_width(annot)
-        font_size = self.annotation_font_size(annot)
-        opacity = self.annotation_opacity(annot)
-        quad_points = self.annotation_quad_points(annot)
-        line_start, line_end = self.annotation_line_points(annot)
-        line_ending = self.annotation_line_ending(annot)
-        return AnnotationModel(
-            id=f"p{page_index + 1}-xref{annot.xref}",
-            xref=annot.xref,
-            page_index=page_index,
-            pdf_type=pdf_type,
-            app_type=app_type,
-            rect=fitz.Rect(annot.rect),
-            text=self.annotation_text(annot),
-            color=color,
-            border_width=border_width,
-            font_size=font_size,
-            opacity=opacity,
-            quad_points=quad_points,
-            line_start=line_start,
-            line_end=line_end,
-            line_ending=line_ending,
-            is_supported=app_type in SUPPORTED_APP_TYPES,
-        )
-
-    def classify_annotation(self, annot: fitz.Annot, pdf_type: str) -> str:
-        if pdf_type == "Highlight":
-            return "highlight"
-        if pdf_type == "FreeText":
-            return "freetext"
-        if pdf_type == "Square":
-            return "square"
-        if pdf_type == "Line" and "Arrow" in self.annotation_line_ending(annot):
-            return "arrow"
-        return "unsupported"
-
-    def annotation_text(self, annot: fitz.Annot) -> str:
-        info = annot.info or {}
-        return info.get("content") or info.get("subject") or ""
-
-    def annotation_color(self, annot: fitz.Annot) -> tuple | None:
-        colors = annot.colors or {}
-        return colors.get("stroke") or colors.get("fill")
-
-    def annotation_border_width(self, annot: fitz.Annot) -> float | None:
-        border = annot.border or {}
-        width = border.get("width")
-        return float(width) if width is not None else None
-
-    def annotation_font_size(self, annot: fitz.Annot) -> float | None:
-        if self.doc is None or not annot.xref:
-            return None
-        try:
-            key_type, value = self.doc.xref_get_key(annot.xref, "DA")
-        except Exception:
-            return None
-        if key_type == "null" or not value:
-            return None
-        match = re.search(r"(?:^|\s)(\d+(?:\.\d+)?)\s+Tf(?:\s|$)", value)
-        if not match:
-            return None
-        return float(match.group(1))
-
-    def annotation_opacity(self, annot: fitz.Annot) -> float | None:
-        try:
-            opacity = getattr(annot, "opacity", None)
-        except Exception:
-            return None
-        if opacity is None or opacity < 0:
-            return None
-        return max(0.0, min(1.0, float(opacity)))
-
-    def annotation_quad_points(self, annot: fitz.Annot) -> list[tuple[float, float]]:
-        vertices = getattr(annot, "vertices", None)
-        if not vertices:
-            return []
-        return [self.point_xy(point) for point in vertices]
-
-    def annotation_line_points(self, annot: fitz.Annot) -> tuple[tuple[float, float] | None, tuple[float, float] | None]:
-        vertices = getattr(annot, "vertices", None)
-        if not vertices or len(vertices) < 2:
-            return None, None
-        start = vertices[0]
-        end = vertices[-1]
-        return self.point_xy(start), self.point_xy(end)
-
-    def point_xy(self, point) -> tuple[float, float]:
-        if hasattr(point, "x") and hasattr(point, "y"):
-            return float(point.x), float(point.y)
-        return float(point[0]), float(point[1])
-
-    def annotation_line_ending(self, annot: fitz.Annot) -> str:
-        if self.doc is None or not annot.xref:
-            return ""
-        try:
-            value = self.doc.xref_get_key(annot.xref, "LE")
-        except Exception:
-            return ""
-        if not value or len(value) < 2:
-            return ""
-        return str(value[1])
+        return self.annotation_repo.load_page_annotations(page_index)
 
     def show_current_page_annotations(self) -> None:
         if self.annotations_dock is None:
-            self.annotations_dock = QDockWidget("Current Page Annotations", self)
+            self.annotations_dock = QDockWidget("Annotations", self)
             self.annotations_dock.setAllowedAreas(
                 Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
             )
@@ -1618,28 +1275,22 @@ class MainWindow(QMainWindow):
             self.annotations_tabs = QTabWidget()
             self.annotations_tabs.setTabPosition(QTabWidget.TabPosition.East)
 
-            self.annotations_table = QTableWidget(0, 6)
-            self.annotations_table.setHorizontalHeaderLabels(("Status", "Type", "xref", "Content", "Rect", "Note"))
-            self.annotations_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-            self.annotations_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-            self.annotations_table.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
-            self.annotations_table.setStyleSheet(
-                "QTableWidget::item:selected { background-color: rgb(242, 242, 242); color: black; }"
-            )
+            self.annotations_table = AnnotationListWidget(self.rect_text, self.annotation_note)
             self.annotations_table.itemSelectionChanged.connect(self.on_annotations_table_selection_changed)
 
-            self.properties_page = QWidget()
-            self.properties_layout = QVBoxLayout(self.properties_page)
-            self.properties_layout.addWidget(QLabel("Select an annotation to edit its properties."))
-            self.properties_layout.addStretch()
+            self.properties_page = AnnotationPropertiesWidget(
+                self.on_highlight_property_change,
+                self.on_highlight_default_change,
+                self.on_freetext_property_change,
+                self.on_stroked_property_change,
+            )
 
             self.annotations_tabs.addTab(self.annotations_table, "Annotation List")
             self.annotations_tabs.addTab(self.properties_page, "Properties")
             self.annotations_dock.setWidget(self.annotations_tabs)
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.annotations_dock)
 
-        self.annotations_dock.show()
-        self.annotations_dock.raise_()
+        self.show_dock(self.annotations_dock)
         self.refresh_annotations_table()
         self.refresh_properties_panel()
 
@@ -1648,154 +1299,421 @@ class MainWindow(QMainWindow):
         if self.annotations_tabs is not None:
             self.annotations_tabs.setCurrentIndex(1)
 
-    def clear_properties_layout(self) -> None:
-        if self.properties_layout is None:
+    def audit_current_page(self) -> None:
+        if self.doc is None:
             return
-        self.clear_layout_items(self.properties_layout)
+        report = run_audit_current_page(self.doc, self.page_index)
+        self.log_debug(
+            f"Audit current page: page={self.page_index + 1} "
+            f"annotations={report.annotations_found} issues={len(report.issues)}"
+        )
+        self.show_audit_report("Audit Current Page", format_audit_report(report))
 
-    def clear_layout_items(self, layout) -> None:
-        while layout.count():
-            item = layout.takeAt(0)
-            child_layout = item.layout()
-            if child_layout is not None:
-                self.clear_layout_items(child_layout)
-                child_layout.deleteLater()
-                continue
+    def audit_document_summary(self) -> None:
+        if self.doc is None:
+            return
+        report = run_audit_document_summary(self.doc)
+        self.log_debug(
+            f"Audit document summary: pages={report.page_count} "
+            f"annotations={report.annotations_found} issues={len(report.issues)}"
+        )
+        self.show_audit_report("Audit Document Summary", format_audit_report(report))
 
-            widget = item.widget()
-            if widget is not None:
-                widget.hide()
-                widget.setParent(None)
-                widget.deleteLater()
-                continue
-
-            spacer = item.spacerItem()
-            if spacer is not None:
-                continue
-
-    def refresh_properties_panel(self) -> None:
-        if self.properties_layout is None:
+    def reindex_current_pdf(self) -> None:
+        if self.doc is None or self.pdf_path is None:
+            return
+        if self.reindex_thread is not None:
             return
 
-        self.updating_properties_panel = True
-        try:
-            self.clear_properties_layout()
-            if self.selected_annotation_id is None:
-                self.properties_layout.addWidget(QLabel("Select an annotation to edit its properties."))
-                self.properties_layout.addStretch()
-                return
-
-            model = self.annotation_model_map.get(self.selected_annotation_id)
-            if model is None:
-                self.properties_layout.addWidget(QLabel("Selected annotation is not available."))
-                self.properties_layout.addStretch()
-                return
-
-            self.properties_layout.addWidget(QLabel(f"{model.pdf_type} xref={model.xref}"))
-            if not model.is_supported:
-                self.properties_layout.addWidget(QLabel("Unsupported annotation type."))
-                self.properties_layout.addStretch()
-                return
-
-            form = QFormLayout()
-            self.properties_layout.addLayout(form)
-            if model.app_type == "highlight":
-                self.populate_highlight_properties(form, model)
-            elif model.app_type == "freetext":
-                self.populate_freetext_properties(form, model)
-            elif model.app_type in {"square", "arrow"}:
-                self.populate_stroked_properties(form, model)
-            self.properties_layout.addStretch()
-        finally:
-            self.updating_properties_panel = False
-
-    def populate_highlight_properties(self, form: QFormLayout, model: AnnotationModel) -> None:
-        color_combo = self.create_color_combo(model.color, "Yellow")
-        opacity_spin = QSpinBox()
-        opacity_spin.setRange(5, 100)
-        opacity_spin.setSuffix("%")
-        opacity_spin.setValue(round((model.opacity if model.opacity is not None else self.default_highlight_opacity) * 100))
-        default_check = QCheckBox("Use these values as Highlight default")
-        default_check.setChecked(
-            self.color_name_for_tuple(model.color) == self.color_name_for_tuple(self.default_highlight_color)
-            and abs((model.opacity or self.default_highlight_opacity) - self.default_highlight_opacity) < 0.01
+        pdf_path = self.pdf_path
+        self.reindex_pdf_path = pdf_path
+        extract_highlight_text = self.should_extract_highlight_text_for_index()
+        self.set_reindex_busy(True)
+        self.log_debug(
+            f"Reindex current PDF started: {pdf_path} "
+            f"extract_highlight_text={extract_highlight_text}"
         )
 
-        form.addRow("Color", color_combo)
-        form.addRow("Opacity", opacity_spin)
-        form.addRow("", default_check)
+        self.reindex_thread = QThread(self)
+        self.reindex_worker = ReindexWorker(self.index_path(), pdf_path, extract_highlight_text)
+        self.reindex_worker.moveToThread(self.reindex_thread)
+        self.reindex_thread.started.connect(self.reindex_worker.run)
+        self.reindex_worker.progress.connect(self.on_reindex_progress)
+        self.reindex_worker.finished.connect(self.on_reindex_finished)
+        self.reindex_worker.failed.connect(self.on_reindex_failed)
+        self.reindex_worker.finished.connect(self.reindex_thread.quit)
+        self.reindex_worker.failed.connect(self.reindex_thread.quit)
+        self.reindex_worker.finished.connect(self.reindex_worker.deleteLater)
+        self.reindex_worker.failed.connect(self.reindex_worker.deleteLater)
+        self.reindex_thread.finished.connect(self.cleanup_reindex_thread)
+        self.reindex_thread.start()
 
-        def apply() -> None:
-            color = ANNOTATION_COLORS[color_combo.currentText()]
-            opacity = opacity_spin.value() / 100
-            self.apply_property_change(
-                lambda selected: self.update_highlight_annotation(selected, color, opacity),
-                f"Edited Highlight xref={model.xref}. Use Save to persist.",
+    def should_extract_highlight_text_for_index(self) -> bool:
+        return self.extract_highlight_text_on_reindex
+
+    def set_reindex_busy(self, busy: bool) -> None:
+        self.reindex_current_pdf_action.setEnabled(not busy and self.doc is not None)
+        self.clear_annotation_index_action.setEnabled(not busy)
+        self.search_annotations_action.setEnabled(not busy)
+        self.open_action.setEnabled(not busy)
+        self.close_action.setEnabled(not busy and self.doc is not None)
+        self.save_action.setEnabled(not busy and self.doc is not None)
+        self.save_as_action.setEnabled(not busy and self.doc is not None)
+        self.save_incremental_action.setEnabled(not busy and self.doc is not None)
+        if self.annotation_search_widget is not None:
+            self.annotation_search_widget.set_indexing_busy(busy)
+
+        if busy:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            self.statusBar().showMessage("Indexing current PDF, please wait...")
+        else:
+            QApplication.restoreOverrideCursor()
+            self.update_actions()
+        QApplication.processEvents()
+
+    @Slot(int, int, int)
+    def on_reindex_progress(self, page_number: int, page_count: int, annotation_count: int) -> None:
+        message = f"Indexing page {page_number} / {page_count}, annotations {annotation_count}..."
+        self.statusBar().showMessage(message)
+        if self.annotation_search_widget is not None:
+            self.annotation_search_widget.set_index_status(message, stale=True)
+
+    @Slot(int)
+    def on_reindex_finished(self, count: int) -> None:
+        path = self.reindex_pdf_path
+        self.log_debug(f"Reindex current PDF completed: {path} annotations={count}")
+        self.set_reindex_busy(False)
+        self.statusBar().showMessage(f"Indexed {count} annotations.")
+        self.refresh_annotation_search_status()
+        if self.annotation_search_widget is not None:
+            self.annotation_search_widget.clear_results()
+
+    @Slot(str)
+    def on_reindex_failed(self, message: str) -> None:
+        path = self.reindex_pdf_path
+        self.log_debug(f"Reindex current PDF failed: {path}: {message}")
+        self.set_reindex_busy(False)
+        self.show_error("Reindex Current PDF failed", RuntimeError(message))
+
+    def cleanup_reindex_thread(self) -> None:
+        if self.reindex_thread is not None:
+            self.reindex_thread.deleteLater()
+        self.reindex_worker = None
+        self.reindex_thread = None
+        self.reindex_pdf_path = None
+        self.update_actions()
+
+    def clear_annotation_index(self) -> None:
+        message_box = QMessageBox(self)
+        message_box.setIcon(QMessageBox.Icon.Warning)
+        message_box.setWindowTitle("Clear Annotation Index")
+        message_box.setText("Delete all annotation index records?")
+        message_box.setInformativeText("This does not modify any PDF files.")
+        confirm_button = message_box.addButton("Confirm Clear", QMessageBox.ButtonRole.AcceptRole)
+        message_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+        message_box.setDefaultButton(confirm_button)
+        message_box.exec()
+        if message_box.clickedButton() is not confirm_button:
+            self.log_debug("Clear annotation index canceled by user")
+            return
+
+        try:
+            self.annotation_index.clear_all()
+            if self.annotation_search_widget is not None:
+                self.annotation_search_widget.reset_search_state()
+                self.annotation_search_widget.set_index_status("Annotation index is empty.", missing=True)
+            self.log_debug("Clear annotation index completed")
+            self.statusBar().showMessage("Annotation index cleared.")
+            QMessageBox.information(self, "Clear Annotation Index", "Annotation index cleared.")
+        except Exception as exc:
+            self.log_debug(f"Clear annotation index failed: {exc}")
+            self.show_error("Clear Annotation Index failed", exc)
+
+    def show_annotation_search(self) -> None:
+        if self.annotation_search_dock is None:
+            self.annotation_search_dock = QDockWidget("Search Annotations", self)
+            self.annotation_search_dock.setAllowedAreas(
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+                | Qt.DockWidgetArea.BottomDockWidgetArea
             )
-            if default_check.isChecked():
-                self.default_highlight_color = color
-                self.default_highlight_opacity = opacity
-                self.save_app_settings()
+            self.annotation_search_widget = AnnotationSearchWidget(self)
+            self.annotation_search_widget.search_requested.connect(self.search_annotations)
+            self.annotation_search_widget.result_activated.connect(self.jump_to_search_result)
+            self.annotation_search_widget.maximize_requested.connect(self.toggle_search_dock_maximized)
+            self.annotation_search_dock.setWidget(self.annotation_search_widget)
+            self.annotation_search_dock.topLevelChanged.connect(self.on_search_dock_top_level_changed)
+            self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.annotation_search_dock)
 
-        color_combo.currentTextChanged.connect(lambda _text: apply())
-        opacity_spin.valueChanged.connect(lambda _value: apply())
-        default_check.toggled.connect(lambda checked: apply() if checked else None)
+        self.show_dock(self.annotation_search_dock)
+        self.update_search_dock_maximize_state()
+        self.refresh_annotation_search_status()
 
-    def populate_freetext_properties(self, form: QFormLayout, model: AnnotationModel) -> None:
+    def search_annotations(self, keyword: str, app_type) -> None:
+        try:
+            search_response = self.annotation_index.search_with_timing(keyword, app_type)
+            results = search_response.results
+            ui_ms = 0.0
+            if self.annotation_search_widget is not None:
+                ui_ms = self.annotation_search_widget.set_results(results)
+            total_ms = search_response.sqlite_ms + search_response.build_ms + ui_ms
+            self.log_debug(
+                f"Search annotations: keyword={keyword!r} app_type={app_type!r} results={len(results)} "
+                f"sqlite={search_response.sqlite_ms:.1f}ms "
+                f"build={search_response.build_ms:.1f}ms "
+                f"ui={ui_ms:.1f}ms total={total_ms:.1f}ms"
+            )
+            self.statusBar().showMessage(f"Found {len(results)} indexed annotations.")
+        except Exception as exc:
+            self.log_debug(f"Search annotations failed: {exc}")
+            self.show_error("Search Annotations failed", exc)
+
+    def refresh_annotation_search_status(self) -> None:
+        if self.annotation_search_widget is None:
+            return
+        if self.pdf_path is None:
+            self.annotation_search_widget.set_index_status("No PDF open.", missing=True)
+            return
+
+        try:
+            status = self.annotation_index.document_status(self.pdf_path)
+            self.annotation_search_widget.set_index_status(
+                status.message,
+                stale=status.is_stale,
+                missing=not status.is_indexed,
+            )
+        except Exception as exc:
+            self.annotation_search_widget.set_index_status(f"Index status unavailable: {exc}", missing=True)
+            self.log_debug(f"Index status unavailable: {exc}")
+
+    def on_search_dock_top_level_changed(self, floating: bool) -> None:
+        if not floating:
+            self.annotation_search_restore_geometry = None
+            self.annotation_search_maximized = False
+        self.update_search_dock_maximize_state()
+
+    def update_search_dock_maximize_state(self) -> None:
+        if self.annotation_search_dock is None or self.annotation_search_widget is None:
+            return
+        floating = self.annotation_search_dock.isFloating()
+        maximized = bool(floating and self.annotation_search_maximized)
+        self.annotation_search_widget.set_maximize_state(floating, maximized)
+
+    def toggle_search_dock_maximized(self) -> None:
+        if self.annotation_search_dock is None or self.annotation_search_widget is None:
+            return
+        if not self.annotation_search_dock.isFloating():
+            self.update_search_dock_maximize_state()
+            return
+
+        if self.annotation_search_maximized:
+            if self.annotation_search_restore_geometry is not None:
+                self.annotation_search_dock.restoreGeometry(self.annotation_search_restore_geometry)
+            self.annotation_search_dock.showNormal()
+            self.annotation_search_maximized = False
+        else:
+            self.annotation_search_restore_geometry = self.annotation_search_dock.saveGeometry()
+            self.annotation_search_dock.showMaximized()
+            self.annotation_search_maximized = True
+        self.update_search_dock_maximize_state()
+
+    def jump_to_search_result(self, document_path: str, page_index: int, xref: int) -> None:
+        target_path = Path(document_path)
+        if self.pdf_path is None or target_path.resolve() != self.pdf_path.resolve():
+            QMessageBox.information(
+                self,
+                "Search Annotations",
+                "This search result belongs to another PDF.\n\n"
+                "Cross-file auto-open will be implemented in the next stage.",
+            )
+            self.log_debug(f"Search result jump skipped for non-current PDF: {target_path}")
+            return
+        if self.doc is None:
+            return
+
+        self.cancel_add_tool()
+        self.page_index = max(0, min(page_index, len(self.doc) - 1))
+        self.render_page()
+        self.update_current_recent_page()
+        self.select_annotation_by_xref(xref)
+        self.log_debug(f"Search result jumped: {target_path} page={self.page_index + 1} xref={xref}")
+
+    def log_debug(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.debug_log.append(f"{timestamp} {message}")
+        if len(self.debug_log) > 1000:
+            self.debug_log = self.debug_log[-1000:]
+        self.refresh_debug_log()
+
+    def show_debug_log(self) -> None:
+        if self.debug_log_dock is None:
+            self.debug_log_dock = QDockWidget("Debug Log", self)
+            self.debug_log_dock.setAllowedAreas(
+                Qt.DockWidgetArea.LeftDockWidgetArea
+                | Qt.DockWidgetArea.RightDockWidgetArea
+                | Qt.DockWidgetArea.BottomDockWidgetArea
+            )
+            self.debug_log_text = QPlainTextEdit()
+            self.debug_log_text.setReadOnly(True)
+            self.debug_log_dock.setWidget(self.debug_log_text)
+            self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.debug_log_dock)
+
+        self.refresh_debug_log()
+        self.show_dock(self.debug_log_dock)
+
+    def show_dock(self, dock: QDockWidget) -> None:
+        dock.setVisible(True)
+        dock.show()
+        dock.raise_()
+        widget = dock.widget()
+        if widget is not None:
+            widget.setFocus()
+
+    def refresh_debug_log(self) -> None:
+        if self.debug_log_text is None:
+            return
+        text = "\n".join(self.debug_log) if self.debug_log else "Debug log is empty."
+        self.debug_log_text.setPlainText(text)
+        scrollbar = self.debug_log_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+
+    def debug_current_page_state(self) -> None:
+        for line in self.build_current_page_state_debug_lines("Debug Current Page State"):
+            self.log_debug(line)
+        self.show_debug_log()
+
+    def log_current_page_state_snapshot(self, title: str) -> None:
+        for line in self.build_current_page_state_debug_lines(title):
+            self.log_debug(line)
+
+    def build_current_page_state_debug_lines(self, title: str) -> list[str]:
+        if self.doc is None:
+            return [f"{title} skipped: no PDF open"]
+
+        pdf_annotation_count = 0
+        pdf_annotation_error: str | None = None
+        try:
+            page = self.current_page()
+            annot = page.first_annot
+            while annot is not None:
+                pdf_annotation_count += 1
+                annot = annot.next
+        except Exception as exc:
+            pdf_annotation_error = str(exc)
+
+        model_ids = {model.id for model in self.current_annotations}
+        supported_model_ids = {model.id for model in self.current_annotations if model.is_supported and not model.deleted}
+        item_model_ids = [item.data(0) for item in self.annotation_items if item.data(0)]
+        item_model_id_set = set(item_model_ids)
+        missing_item_ids = sorted(supported_model_ids - item_model_id_set)
+        orphan_item_ids = sorted(item_id for item_id in item_model_id_set if item_id not in model_ids)
+        hit_item_count = sum(1 for item in self.annotation_items if item.opacity() <= 0.02)
+        visible_item_count = len(self.annotation_items) - hit_item_count
+
+        xref_counts: dict[int, int] = {}
+        for model in self.current_annotations:
+            if model.xref > 0:
+                xref_counts[model.xref] = xref_counts.get(model.xref, 0) + 1
+        duplicate_xrefs = sorted(xref for xref, count in xref_counts.items() if count > 1)
+
+        selected_exists = (
+            self.selected_annotation_id is not None and self.selected_annotation_id in self.annotation_model_map
+        )
+        dirty_count = sum(1 for model in self.current_annotations if model.dirty)
+        new_count = sum(1 for model in self.current_annotations if model.source == "new")
+        deleted_count = sum(1 for model in self.current_annotations if model.deleted)
+        unsupported_count = sum(1 for model in self.current_annotations if not model.is_supported)
+
+        lines = [
+            title,
+            f"  file: {self.pdf_path}",
+            f"  page: {self.page_index + 1}/{len(self.doc)}",
+            f"  zoom: {self.zoom}",
+            f"  dirty document: {self.is_dirty}",
+            f"  pdf page annotations: {pdf_annotation_count}",
+            f"  current_annotations: {len(self.current_annotations)}",
+            f"  annotation_model_map: {len(self.annotation_model_map)}",
+            f"  annotation_items: {len(self.annotation_items)}",
+            f"  visible annotation items: {visible_item_count}",
+            f"  hit annotation items: {hit_item_count}",
+            f"  selection_items: {len(self.selection_items)}",
+            f"  selected_annotation_id: {self.selected_annotation_id}",
+            f"  selected exists in model map: {selected_exists}",
+            f"  dirty models: {dirty_count}",
+            f"  new models: {new_count}",
+            f"  deleted models: {deleted_count}",
+            f"  unsupported models: {unsupported_count}",
+            f"  duplicate xrefs: {duplicate_xrefs if duplicate_xrefs else 'none'}",
+            f"  supported models without scene item: {missing_item_ids if missing_item_ids else 'none'}",
+            f"  scene items without model: {orphan_item_ids if orphan_item_ids else 'none'}",
+        ]
+        if pdf_annotation_error is not None:
+            lines.append(f"  pdf annotation traversal error: {pdf_annotation_error}")
+
+        return lines
+
+    def show_audit_report(self, title: str, text: str) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(760, 560)
+        layout = QVBoxLayout(dialog)
         text_edit = QPlainTextEdit()
-        text_edit.setPlainText(model.text)
-        text_edit.setMinimumHeight(120)
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(text)
+        layout.addWidget(text_edit)
 
-        font_size_spin = QSpinBox()
-        font_size_spin.setRange(self.freetext_font_size_min, self.freetext_font_size_max)
-        font_size_spin.setValue(self.clamp_freetext_font_size(round(model.font_size or self.default_freetext_font_size)))
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
 
-        color_combo = self.create_color_combo(model.color, "Red")
-        form.addRow("Text", text_edit)
-        form.addRow("Font size", font_size_spin)
-        form.addRow("Color", color_combo)
+    def refresh_properties_panel(self) -> None:
+        if self.properties_page is None:
+            return
 
-        def apply() -> None:
-            text = text_edit.toPlainText()
-            if not text.strip():
-                return
-            color = ANNOTATION_COLORS[color_combo.currentText()]
-            self.apply_property_change(
-                lambda selected: self.update_freetext_annotation(selected, text, font_size_spin.value(), color),
-                f"Edited FreeText xref={model.xref}. Use Save to persist.",
-            )
+        model = self.annotation_model_map.get(self.selected_annotation_id) if self.selected_annotation_id else None
+        self.properties_page.set_model(
+            model,
+            default_highlight_color=self.default_highlight_color,
+            default_highlight_opacity=self.default_highlight_opacity,
+            freetext_font_size_min=self.freetext_font_size_min,
+            freetext_font_size_max=self.freetext_font_size_max,
+            default_freetext_font_size=self.default_freetext_font_size,
+        )
 
-        text_edit.textChanged.connect(apply)
-        font_size_spin.valueChanged.connect(lambda _value: apply())
-        color_combo.currentTextChanged.connect(lambda _text: apply())
+    def on_highlight_property_change(self, color: tuple[float, float, float], opacity: float) -> None:
+        self.apply_property_change(
+            lambda selected: self.update_highlight_annotation(selected, color, opacity),
+            self.property_status_message("Edited Highlight"),
+        )
 
-    def populate_stroked_properties(self, form: QFormLayout, model: AnnotationModel) -> None:
-        color_combo = self.create_color_combo(model.color, "Red")
-        width_spin = QSpinBox()
-        width_spin.setRange(1, 10)
-        width_spin.setValue(max(1, min(10, int(round(model.border_width or 1)))))
-        label = "Border width" if model.app_type == "square" else "Line width"
-        form.addRow("Stroke color", color_combo)
-        form.addRow(label, width_spin)
+    def on_highlight_default_change(self, color: tuple[float, float, float], opacity: float) -> None:
+        self.default_highlight_color = color
+        self.default_highlight_opacity = opacity
+        self.save_app_settings()
 
-        def apply() -> None:
-            color = ANNOTATION_COLORS[color_combo.currentText()]
-            self.apply_property_change(
-                lambda selected: self.update_stroked_annotation(selected, color, width_spin.value()),
-                f"Edited {model.pdf_type} xref={model.xref}. Use Save to persist.",
-            )
+    def on_freetext_property_change(self, text: str, font_size: int, color: tuple[float, float, float]) -> None:
+        self.apply_property_change(
+            lambda selected: self.update_freetext_annotation(selected, text, font_size, color),
+            self.property_status_message("Edited FreeText"),
+        )
 
-        color_combo.currentTextChanged.connect(lambda _text: apply())
-        width_spin.valueChanged.connect(lambda _value: apply())
+    def on_stroked_property_change(self, color: tuple[float, float, float], width: int) -> None:
+        model = self.annotation_model_map.get(self.selected_annotation_id) if self.selected_annotation_id else None
+        label = f"Edited {model.pdf_type}" if model is not None else "Edited annotation"
+        self.apply_property_change(
+            lambda selected: self.update_stroked_annotation(selected, color, width),
+            self.property_status_message(label),
+        )
 
-    def create_color_combo(self, color: tuple | None, fallback_name: str) -> QComboBox:
-        combo = QComboBox()
-        combo.addItems(ANNOTATION_COLORS.keys())
-        combo.setCurrentText(self.color_name_for_tuple(color) if color else fallback_name)
-        return combo
+    def property_status_message(self, prefix: str) -> str:
+        model = self.annotation_model_map.get(self.selected_annotation_id) if self.selected_annotation_id else None
+        if model is None:
+            return f"{prefix}. Use Save to persist."
+        return f"{prefix} xref={model.xref}. Use Save to persist."
 
     def apply_property_change(self, callback, status: str) -> None:
-        if self.updating_properties_panel or self.applying_property_change:
+        if self.applying_property_change:
             return
         if self.doc is None or self.selected_annotation_id is None:
             return
@@ -1822,26 +1740,11 @@ class MainWindow(QMainWindow):
 
         table = self.annotations_table
         self.updating_table_selection = True
-        table.setRowCount(len(self.current_annotations))
         try:
-            for row, model in enumerate(self.current_annotations):
-                values = (
-                    "Supported" if model.is_supported else "Unsupported",
-                    f"{model.pdf_type} / {model.app_type}",
-                    str(model.xref),
-                    model.text,
-                    self.rect_text(model.rect),
-                    self.annotation_note(model),
-                )
-                for column, value in enumerate(values):
-                    item = QTableWidgetItem(value)
-                    if not model.is_supported:
-                        item.setBackground(QColor(255, 225, 225))
-                    table.setItem(row, column, item)
+            table.set_annotations(self.current_annotations)
         finally:
             self.updating_table_selection = False
 
-        table.resizeColumnsToContents()
         self.sync_table_selection()
 
     def rect_text(self, rect: fitz.Rect) -> str:
@@ -2267,6 +2170,10 @@ class MainWindow(QMainWindow):
         foxit_checkbox.setChecked(self.use_foxit_freetext)
         layout.addWidget(foxit_checkbox)
 
+        extract_highlight_text_checkbox = QCheckBox("Extract highlighted page text when reindexing")
+        extract_highlight_text_checkbox.setChecked(self.extract_highlight_text_on_reindex)
+        layout.addWidget(extract_highlight_text_checkbox)
+
         form = QFormLayout()
         font_min_spin = QSpinBox()
         font_min_spin.setRange(1, 72)
@@ -2293,6 +2200,7 @@ class MainWindow(QMainWindow):
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.set_foxit_freetext(foxit_checkbox.isChecked())
+            self.extract_highlight_text_on_reindex = extract_highlight_text_checkbox.isChecked()
             self.freetext_font_size_min = max(1, font_min_spin.value())
             self.freetext_font_size_max = max(self.freetext_font_size_min, font_max_spin.value())
             self.default_freetext_font_size = self.clamp_freetext_font_size(font_size_spin.value())
@@ -2364,13 +2272,215 @@ class MainWindow(QMainWindow):
             return self.save_as()
 
         try:
-            self.doc.saveIncr()
+            self.log_debug(f"Save started: {self.pdf_path}")
+            reply = QMessageBox.question(
+                self,
+                "Confirm Save",
+                "This app will save by fully rewriting the PDF and creating a backup copy first.\n\n"
+                "Continue and replace the current PDF file?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.log_debug("Save canceled by user")
+                return False
+            self.log_current_page_state_snapshot("Before full save state snapshot")
+            if not self.confirm_current_page_audit_before_save():
+                self.log_debug("Save canceled after pre-save audit")
+                return False
+            backup_path = self.save_full_rewrite_to_current_path()
             self.clear_dirty()
-            QMessageBox.information(self, "Saved", f"Saved:\n{self.pdf_path}")
+            self.log_debug(f"Save completed: {self.pdf_path} backup={backup_path}")
+            QMessageBox.information(self, "Saved", f"Saved:\n{self.pdf_path}\n\nBackup:\n{backup_path}")
             return True
         except Exception as exc:
+            self.log_debug(f"Save failed: {exc}")
             self.show_error("Save failed", exc)
             return False
+
+    def save_incremental(self) -> bool:
+        if self.doc is None:
+            return True
+
+        if self.pdf_path is None:
+            QMessageBox.warning(self, "Save Incremental", "This PDF has no current file path. Use Save As instead.")
+            return False
+
+        try:
+            self.log_debug(f"Save Incremental started: {self.pdf_path}")
+            reply = QMessageBox.question(
+                self,
+                "Confirm Save Incremental",
+                "Save Incremental writes changes directly into the current PDF without creating a backup.\n\n"
+                "Continue?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self.log_debug("Save Incremental canceled by user")
+                return False
+
+            self.log_current_page_state_snapshot("Before incremental save state snapshot")
+            if not self.doc.can_save_incrementally():
+                self.log_debug(f"Save Incremental unavailable: {self.pdf_path}")
+                QMessageBox.warning(
+                    self,
+                    "Save Incremental",
+                    "This PDF cannot be saved incrementally. No fallback save was performed.",
+                )
+                return False
+
+            self.doc.saveIncr()
+            self.clear_dirty()
+            self.log_debug(f"Save Incremental completed: {self.pdf_path}")
+            QMessageBox.information(self, "Saved", f"Incrementally saved:\n{self.pdf_path}")
+            return True
+        except Exception as exc:
+            self.log_debug(f"Save Incremental failed: {exc}")
+            self.show_error("Save Incremental failed", exc)
+            return False
+
+    def save_full_rewrite_to_current_path(self) -> Path:
+        if self.doc is None or self.pdf_path is None:
+            raise RuntimeError("No PDF is open.")
+
+        current_path = self.pdf_path
+        page_index = self.page_index
+        temp_path: Path | None = None
+        backup_path: Path | None = None
+        delete_temp_on_exit = True
+        try:
+            fd, temp_name = tempfile.mkstemp(
+                prefix=f".{current_path.stem}.",
+                suffix=".tmp.pdf",
+                dir=str(current_path.parent),
+            )
+            os.close(fd)
+            temp_path = Path(temp_name)
+            self.log_debug(f"Full save temp created: {temp_path}")
+            self.doc.save(temp_path, garbage=4, deflate=True)
+            if not temp_path.exists() or temp_path.stat().st_size <= 0:
+                raise RuntimeError(f"Full save did not create a valid temporary file:\n{temp_path}")
+            self.log_debug(f"Full save temp written: {temp_path} bytes={temp_path.stat().st_size}")
+            self.audit_saved_temp_pdf(temp_path, page_index)
+
+            backup_path = self.backup_path_for(current_path)
+            shutil.copy2(current_path, backup_path)
+            self.log_debug(f"Full save backup created: {backup_path}")
+
+            self.release_current_pdf_for_replace()
+            self.doc.close()
+            self.doc = None
+            self.annotation_repo = None
+            os.replace(temp_path, current_path)
+            self.log_debug(f"Full save replaced original: {current_path}")
+            self.doc = fitz.open(current_path)
+            if len(self.doc) == 0:
+                self.doc.close()
+                self.doc = None
+                raise RuntimeError("The rewritten PDF has no readable pages. The backup was kept.")
+            self.annotation_repo = AnnotationRepository(self.doc)
+            self.pdf_path = current_path
+            self.page_index = max(0, min(page_index, len(self.doc) - 1))
+            self.render_page(preserve_selection=True)
+            self.log_debug(f"Full save reopened rewritten PDF: {current_path} pages={len(self.doc)}")
+            return backup_path
+        except Exception as exc:
+            delete_temp_on_exit = False
+            self.log_debug(f"Full save rewrite failed: {exc}")
+            if self.doc is None and current_path.exists():
+                try:
+                    self.doc = fitz.open(current_path)
+                    if len(self.doc) > 0:
+                        self.annotation_repo = AnnotationRepository(self.doc)
+                        self.pdf_path = current_path
+                        self.page_index = max(0, min(page_index, len(self.doc) - 1))
+                        self.render_page(preserve_selection=True)
+                    else:
+                        self.doc.close()
+                        self.doc = None
+                        self.annotation_repo = None
+                except Exception:
+                    self.doc = None
+                    self.annotation_repo = None
+            details = [str(exc)]
+            if backup_path is not None:
+                details.append(f"Backup kept at:\n{backup_path}")
+            if temp_path is not None and temp_path.exists():
+                details.append(f"Temporary rewritten file kept at:\n{temp_path}")
+            details.append("If this file is open in Foxit, Acrobat, or another program, close it and try again.")
+            raise RuntimeError("\n\n".join(details)) from exc
+        finally:
+            if delete_temp_on_exit and temp_path is not None and temp_path.exists() and temp_path != current_path:
+                try:
+                    temp_path.unlink()
+                except OSError:
+                    pass
+
+    def confirm_current_page_audit_before_save(self) -> bool:
+        if self.doc is None:
+            return True
+
+        report = run_audit_current_page(self.doc, self.page_index)
+        if not report_has_errors(report):
+            self.log_debug(
+                f"Pre-save audit OK: page={self.page_index + 1} "
+                f"annotations={report.annotations_found} issues={len(report.issues)}"
+            )
+            return True
+
+        self.log_debug(
+            f"Pre-save audit has errors: page={self.page_index + 1} "
+            f"annotations={report.annotations_found} issues={len(report.issues)}"
+        )
+        reply = QMessageBox.question(
+            self,
+            "Audit Issues Before Save",
+            "The current page has audit errors before saving.\n\n"
+            f"{format_audit_report(report)}\n\n"
+            "Continue saving anyway?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        proceed = reply == QMessageBox.StandardButton.Yes
+        self.log_debug(f"Pre-save audit user decision: {'continue' if proceed else 'cancel'}")
+        return proceed
+
+    def audit_saved_temp_pdf(self, temp_path: Path, page_index: int) -> None:
+        self.log_debug(f"Temp PDF audit started: {temp_path}")
+        temp_doc = fitz.open(temp_path)
+        try:
+            report = run_audit_current_page(temp_doc, min(max(0, page_index), max(0, len(temp_doc) - 1)))
+            if report_has_errors(report):
+                self.log_debug(
+                    f"Temp PDF audit failed: page={page_index + 1} "
+                    f"annotations={report.annotations_found} issues={len(report.issues)}"
+                )
+                raise RuntimeError(
+                    "Audit failed on the temporary rewritten PDF. The original file was not replaced.\n\n"
+                    + format_audit_report(report)
+                )
+            self.log_debug(
+                f"Temp PDF audit OK: page={page_index + 1} "
+                f"annotations={report.annotations_found} issues={len(report.issues)}"
+            )
+        finally:
+            temp_doc.close()
+
+    def backup_path_for(self, path: Path) -> Path:
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        return path.with_name(f"{path.name}.bak-{timestamp}.pdf")
+
+    def release_current_pdf_for_replace(self) -> None:
+        self.cancel_add_tool()
+        self.selected_annotation_id = None
+        self.current_annotations = []
+        self.clear_annotation_items()
+        self.page_item.setPixmap(QPixmap())
+        self.scene.setSceneRect(0, 0, 0, 0)
+        self.refresh_annotations_table()
+        self.refresh_properties_panel()
+        gc.collect()
 
     def save_as(self) -> bool:
         if self.doc is None:
@@ -2382,21 +2492,26 @@ class MainWindow(QMainWindow):
 
         file_name, _ = QFileDialog.getSaveFileName(self, "Save PDF As", default_name, "PDF files (*.pdf)")
         if not file_name:
+            self.log_debug("Save As canceled by user")
             return False
 
         try:
+            self.log_debug(f"Save As started: {file_name}")
             self.doc.save(file_name, garbage=4, deflate=True)
             page_index = self.page_index
             self.doc.close()
             self.doc = fitz.open(file_name)
+            self.annotation_repo = AnnotationRepository(self.doc)
             self.pdf_path = Path(file_name)
             self.page_index = max(0, min(page_index, len(self.doc) - 1))
             self.clear_dirty()
             self.update_recent_file(self.pdf_path, self.page_index)
             self.render_page()
+            self.log_debug(f"Save As completed: {file_name}")
             QMessageBox.information(self, "Saved", f"Saved to:\n{file_name}")
             return True
         except Exception as exc:
+            self.log_debug(f"Save As failed: {exc}")
             self.show_error("Save failed", exc)
             return False
 
@@ -2437,12 +2552,15 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event) -> None:
         if not self.confirm_unsaved_changes("exit"):
+            self.log_debug("Exit canceled by unsaved changes prompt")
             event.ignore()
             return
         self.cancel_add_tool()
+        closed_path = self.pdf_path
         if self.doc is not None:
             self.update_current_recent_page()
             self.doc.close()
+            self.log_debug(f"Exit closed PDF: {closed_path}")
         super().closeEvent(event)
 
 
