@@ -39,9 +39,22 @@ class DocumentIndexStatus:
     message: str = ""
 
 
+@dataclass
+class IndexedDocumentInfo:
+    path: str
+    file_name: str
+    file_size: int | None
+    modified_time: float | None
+    indexed_at: str
+    annotation_count: int
+    exists: bool
+    is_stale: bool
+
+
 class AnnotationIndex:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
+        self.last_warnings: list[str] = []
         self.initialize()
 
     def connect(self) -> sqlite3.Connection:
@@ -121,6 +134,7 @@ class AnnotationIndex:
         progress_callback: Callable[[int, int, int], None] | None = None,
     ) -> int:
         repository = AnnotationRepository(doc)
+        self.last_warnings = []
         stat = path.stat() if path.exists() else None
         indexed_at = self.timestamp()
         page_count = len(doc)
@@ -131,48 +145,50 @@ class AnnotationIndex:
             count = 0
             for page_index in range(page_count):
                 page = doc[page_index]
-                annot = page.first_annot
-                while annot is not None:
-                    model = repository.annotation_to_model(page_index, annot)
-                    content_text, subject_text = self.annotation_info_texts(annot)
-                    selected_text = self.highlight_selected_text(page, model) if extract_highlight_text else ""
-                    color = self.normalized_color(model.color)
-                    connection.execute(
-                        """
-                        INSERT INTO annotations (
-                            document_id, page_index, page_number, xref, pdf_type, app_type,
-                            text, content_text, subject_text, selected_text,
-                            rect_x0, rect_y0, rect_x1, rect_y1,
-                            color_r, color_g, color_b, color_a, indexed_at
+                for annot in repository.iter_page_annotations_by_page(page, page_index):
+                    try:
+                        model = repository.annotation_to_model(page_index, annot)
+                        content_text, subject_text = self.annotation_info_texts(annot)
+                        selected_text = self.highlight_selected_text(page, model) if extract_highlight_text else ""
+                        color = self.normalized_color(model.color)
+                        connection.execute(
+                            """
+                            INSERT INTO annotations (
+                                document_id, page_index, page_number, xref, pdf_type, app_type,
+                                text, content_text, subject_text, selected_text,
+                                rect_x0, rect_y0, rect_x1, rect_y1,
+                                color_r, color_g, color_b, color_a, indexed_at
+                            )
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                document_id,
+                                model.page_index,
+                                model.page_index + 1,
+                                model.xref,
+                                model.pdf_type,
+                                model.app_type,
+                                model.text or "",
+                                content_text,
+                                subject_text,
+                                selected_text,
+                                float(model.rect.x0),
+                                float(model.rect.y0),
+                                float(model.rect.x1),
+                                float(model.rect.y1),
+                                color[0],
+                                color[1],
+                                color[2],
+                                model.opacity,
+                                indexed_at,
+                            ),
                         )
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            document_id,
-                            model.page_index,
-                            model.page_index + 1,
-                            model.xref,
-                            model.pdf_type,
-                            model.app_type,
-                            model.text or "",
-                            content_text,
-                            subject_text,
-                            selected_text,
-                            float(model.rect.x0),
-                            float(model.rect.y0),
-                            float(model.rect.x1),
-                            float(model.rect.y1),
-                            color[0],
-                            color[1],
-                            color[2],
-                            model.opacity,
-                            indexed_at,
-                        ),
-                    )
-                    count += 1
-                    annot = annot.next
+                        count += 1
+                    except Exception as exc:
+                        repository.add_warning(page_index, "index_annotation", exc, annot)
                 if progress_callback is not None:
                     progress_callback(page_index + 1, page_count, count)
+            self.last_warnings = [warning.format() for warning in repository.warnings]
             return count
 
     def upsert_document(self, connection: sqlite3.Connection, path: Path, stat, indexed_at: str) -> int:
@@ -200,11 +216,21 @@ class AnnotationIndex:
             raise RuntimeError(f"Document was not indexed: {path}")
         return int(row["id"])
 
-    def search(self, keyword: str, app_type: str | None = None, limit: int = 500) -> list[AnnotationSearchResult]:
-        return self.search_with_timing(keyword, app_type, limit).results
+    def search(
+        self,
+        keyword: str,
+        app_type: str | None = None,
+        limit: int | None = None,
+        document_paths: list[str] | None = None,
+    ) -> list[AnnotationSearchResult]:
+        return self.search_with_timing(keyword, app_type, limit, document_paths).results
 
     def search_with_timing(
-        self, keyword: str, app_type: str | None = None, limit: int = 500
+        self,
+        keyword: str,
+        app_type: str | None = None,
+        limit: int | None = None,
+        document_paths: list[str] | None = None,
     ) -> AnnotationSearchResponse:
         keyword = keyword.strip()
         parameters: list[object] = []
@@ -223,8 +249,15 @@ class AnnotationIndex:
         if app_type:
             where.append("annotations.app_type = ?")
             parameters.append(app_type)
+        if document_paths:
+            placeholders = ", ".join("?" for _ in document_paths)
+            where.append(f"documents.path IN ({placeholders})")
+            parameters.extend(document_paths)
         where_sql = "WHERE " + " AND ".join(where) if where else ""
-        parameters.append(limit)
+        limit_sql = ""
+        if limit is not None:
+            limit_sql = "LIMIT ?"
+            parameters.append(limit)
         sql = f"""
             SELECT
                 documents.path AS document_path,
@@ -242,7 +275,7 @@ class AnnotationIndex:
             JOIN documents ON documents.id = annotations.document_id
             {where_sql}
             ORDER BY documents.file_name COLLATE NOCASE, annotations.page_number, annotations.xref
-            LIMIT ?
+            {limit_sql}
         """
         query_started = time.perf_counter()
         with self.connect() as connection:
@@ -321,6 +354,52 @@ class AnnotationIndex:
             is_stale=is_stale,
             message=message,
         )
+
+    def database_info(self) -> list[IndexedDocumentInfo]:
+        with self.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT
+                    documents.path,
+                    documents.file_name,
+                    documents.file_size,
+                    documents.modified_time,
+                    documents.indexed_at,
+                    COUNT(annotations.id) AS annotation_count
+                FROM documents
+                LEFT JOIN annotations ON annotations.document_id = documents.id
+                GROUP BY documents.id
+                ORDER BY documents.file_name COLLATE NOCASE
+                """
+            ).fetchall()
+
+        info: list[IndexedDocumentInfo] = []
+        for row in rows:
+            path = Path(str(row["path"]))
+            exists = path.exists()
+            indexed_size = row["file_size"]
+            indexed_mtime = row["modified_time"]
+            is_stale = False
+            if not exists:
+                is_stale = True
+            else:
+                stat = path.stat()
+                is_stale = indexed_size != stat.st_size
+                if indexed_mtime is not None:
+                    is_stale = is_stale or abs(float(indexed_mtime) - stat.st_mtime) > 1.0
+            info.append(
+                IndexedDocumentInfo(
+                    path=str(row["path"]),
+                    file_name=str(row["file_name"]),
+                    file_size=int(indexed_size) if indexed_size is not None else None,
+                    modified_time=float(indexed_mtime) if indexed_mtime is not None else None,
+                    indexed_at=str(row["indexed_at"]),
+                    annotation_count=int(row["annotation_count"]),
+                    exists=exists,
+                    is_stale=is_stale,
+                )
+            )
+        return info
 
     def clear_all(self) -> None:
         with self.connect() as connection:

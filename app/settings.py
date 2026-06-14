@@ -12,6 +12,7 @@ class AppSettings:
     default_highlight_color: tuple[float, float, float] = (1, 1, 0)
     default_highlight_opacity: float = 0.45
     extract_highlight_text_on_reindex: bool = False
+    search_page_size: int = 500
     recent_files: list[dict] = field(default_factory=list)
 
 
@@ -56,6 +57,7 @@ def load_settings(path: Path, max_recent_files: int = 10) -> AppSettings:
         )
         opacity = float(data.get("default_highlight_opacity", settings.default_highlight_opacity))
         settings.default_highlight_opacity = max(0.05, min(1.0, opacity))
+        settings.search_page_size = max(1, min(10000, int(data.get("search_page_size", settings.search_page_size))))
     except (TypeError, ValueError):
         pass
 
@@ -71,6 +73,7 @@ def save_settings(path: Path, settings: AppSettings) -> None:
         "freetext_font_size_min": settings.freetext_font_size_min,
         "freetext_font_size_max": settings.freetext_font_size_max,
         "recent_files": settings.recent_files,
+        "search_page_size": settings.search_page_size,
         "use_foxit_freetext": settings.use_foxit_freetext,
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")

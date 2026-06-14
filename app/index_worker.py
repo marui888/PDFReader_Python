@@ -8,7 +8,7 @@ from app.annotation_index import AnnotationIndex
 
 class ReindexWorker(QObject):
     progress = Signal(int, int, int)
-    finished = Signal(int)
+    finished = Signal(int, list)
     failed = Signal(str)
 
     def __init__(self, db_path: Path, pdf_path: Path, extract_highlight_text: bool) -> None:
@@ -29,7 +29,7 @@ class ReindexWorker(QObject):
                 extract_highlight_text=self.extract_highlight_text,
                 progress_callback=self.progress.emit,
             )
-            self.finished.emit(count)
+            self.finished.emit(count, index.last_warnings)
         except Exception as exc:
             self.failed.emit(str(exc))
         finally:

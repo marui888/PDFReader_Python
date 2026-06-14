@@ -32,18 +32,20 @@ class AnnotationSelectionRenderer:
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
         self.items.append(item)
 
-    def draw_rect_selection(self, rect: QRectF, color: QColor, width: float) -> None:
+    def draw_rect_selection(self, rect: QRectF, color: QColor, width: float, model: AnnotationModel) -> None:
         item = self.scene.addRect(rect, QPen(color, width), QBrush(Qt.BrushStyle.NoBrush))
+        item.setData(2, "selection-rect")
+        item.setData(3, model.id)
         self.add_selection_item(item)
 
     def draw_square_selection(self, model: AnnotationModel) -> None:
         rect = self.scene_rect(model.rect)
-        self.draw_rect_selection(rect, QColor(0, 0, 0), 3.0)
+        self.draw_rect_selection(rect, QColor(0, 0, 0), 3.0, model)
         self.add_rect_resize_handles(rect, model)
 
     def draw_freetext_selection(self, model: AnnotationModel) -> None:
         rect = self.scene_rect(model.rect)
-        self.draw_rect_selection(rect, QColor(0, 0, 0), 1.2)
+        self.draw_rect_selection(rect, QColor(0, 0, 0), 1.2, model)
         self.add_rect_resize_handles(rect, model)
 
     def add_rect_resize_handles(self, rect: QRectF, model: AnnotationModel) -> None:

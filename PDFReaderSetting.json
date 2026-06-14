@@ -11,35 +11,31 @@
   "freetext_font_size_max": 20,
   "recent_files": [
     {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
-      "last_page_index": 318,
-      "last_opened_at": "2026-06-14T05:50:18+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\Communist Manifesto (Karl Marx, Friedrich Engels, David McLellan) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
-      "last_page_index": 0,
-      "last_opened_at": "2026-06-14T04:08:35+08:00"
-    },
-    {
-      "path": "C:\\Users\\Admin\\AppData\\Local\\Temp\\pdfnote_index_jump_smoke.pdf",
-      "last_page_index": 0,
-      "last_opened_at": "2026-06-14T02:56:40+08:00"
-    },
-    {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
-      "last_page_index": 0,
-      "last_opened_at": "2026-06-14T02:09:58+08:00"
+      "last_page_index": 322,
+      "last_opened_at": "2026-06-15T06:14:32+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
+      "last_page_index": 15,
+      "last_opened_at": "2026-06-15T06:14:11+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\Leading Effective Engineering Teams Lessons for Individual Contributors and Managers from 10 Years at Google (Addy Osmani) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+      "last_page_index": 25,
+      "last_opened_at": "2026-06-15T05:40:47+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\Communist Manifesto (Karl Marx, Friedrich Engels, David McLellan) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+      "last_page_index": 46,
+      "last_opened_at": "2026-06-15T05:40:41+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM_annotated.pdf",
       "last_page_index": 78,
       "last_opened_at": "2026-06-13T20:37:12+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\Bill Gates - Source Code_ My Beginnings-Penguin (2025) \u8fd9\u4e0d\u662f\u526f\u672c_JOM.pdf",
-      "last_page_index": 0,
-      "last_opened_at": "2026-06-13T20:37:08+08:00"
     }
   ],
+  "search_page_size": 500,
   "use_foxit_freetext": false
 }
