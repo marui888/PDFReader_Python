@@ -60,11 +60,25 @@ class AnnotationItemRenderer:
         text_item = self.scene.addText(model.text)
         text_item.setDefaultTextColor(self.pdf_color(model.color, QColor(255, 0, 0)))
         font_size = model.font_size or self.default_freetext_font_size
-        text_item.setFont(QFont("Arial", max(1, int(font_size * self.zoom))))
-        text_item.setTextWidth(rect.width())
+        font = QFont("Arial")
+        font.setPixelSize(max(1, int(round(font_size * self.zoom))))
+        text_item.setFont(font)
+        text_item.document().setDocumentMargin(0)
+        text_item.setTextWidth(self.freetext_render_width(model, rect, font_size))
         text_item.setPos(rect.topLeft())
+        text_item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.register_item(text_item, model)
+        text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+        text_item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, False)
+        text_item.unsetCursor()
         self.add_rect_hit_item(rect, model)
+
+    def freetext_render_width(self, model: AnnotationModel, rect: QRectF, font_size: float) -> float:
+        text = model.text or ""
+        longest_line_length = max((len(line) for line in text.splitlines()), default=0)
+        estimated_width = longest_line_length * font_size * self.zoom * 1.2
+        min_width = min(max(estimated_width, 40.0 * self.zoom), 260.0 * self.zoom)
+        return max(rect.width(), min_width)
 
     def add_square_item(self, model: AnnotationModel) -> None:
         rect = self.scene_rect(model.rect)

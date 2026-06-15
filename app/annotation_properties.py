@@ -1,6 +1,16 @@
 from collections.abc import Callable
 
-from PySide6.QtWidgets import QCheckBox, QComboBox, QFormLayout, QLabel, QPlainTextEdit, QSpinBox, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QFormLayout,
+    QLabel,
+    QPlainTextEdit,
+    QSizePolicy,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 from app.models import ANNOTATION_COLORS, AnnotationModel
 
@@ -19,6 +29,8 @@ class AnnotationPropertiesWidget(QWidget):
         self.on_freetext_change = on_freetext_change
         self.on_stroked_change = on_stroked_change
         self.updating = False
+        self.setMinimumWidth(300)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.layout = QVBoxLayout(self)
         self.show_empty()
 
@@ -39,13 +51,13 @@ class AnnotationPropertiesWidget(QWidget):
                 self.show_empty()
                 return
 
-            self.layout.addWidget(QLabel(f"{model.pdf_type} xref={model.xref}"))
+            self.layout.addWidget(self.create_heading_label(f"{model.pdf_type} xref={model.xref}"))
             if not model.is_supported:
-                self.layout.addWidget(QLabel("Unsupported annotation type."))
+                self.layout.addWidget(self.create_heading_label("Unsupported annotation type."))
                 self.layout.addStretch()
                 return
 
-            form = QFormLayout()
+            form = self.create_form_layout()
             self.layout.addLayout(form)
             if model.app_type == "highlight":
                 self.populate_highlight_properties(form, model, default_highlight_color, default_highlight_opacity)
@@ -64,8 +76,24 @@ class AnnotationPropertiesWidget(QWidget):
             self.updating = False
 
     def show_empty(self) -> None:
-        self.layout.addWidget(QLabel("Select an annotation to edit its properties."))
+        self.layout.addWidget(self.create_heading_label("Select an annotation to edit its properties."))
         self.layout.addStretch()
+
+    def create_heading_label(self, text: str) -> QLabel:
+        label = QLabel(text)
+        label.setWordWrap(True)
+        label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        return label
+
+    def create_form_layout(self) -> QFormLayout:
+        form = QFormLayout()
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.ExpandingFieldsGrow)
+        form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapLongRows)
+        return form
+
+    def constrain_field_width(self, widget: QWidget) -> None:
+        widget.setMinimumWidth(140)
+        widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
     def clear(self) -> None:
         self.clear_layout_items(self.layout)
@@ -94,10 +122,12 @@ class AnnotationPropertiesWidget(QWidget):
     ) -> None:
         color_combo = self.create_color_combo(model.color, "Yellow")
         opacity_spin = QSpinBox()
+        self.constrain_field_width(opacity_spin)
         opacity_spin.setRange(5, 100)
         opacity_spin.setSuffix("%")
         opacity_spin.setValue(round((model.opacity if model.opacity is not None else default_highlight_opacity) * 100))
         default_check = QCheckBox("Use these values as Highlight default")
+        default_check.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         default_check.setChecked(
             self.color_name_for_tuple(model.color) == self.color_name_for_tuple(default_highlight_color)
             and abs((model.opacity or default_highlight_opacity) - default_highlight_opacity) < 0.01
@@ -129,15 +159,19 @@ class AnnotationPropertiesWidget(QWidget):
         default_freetext_font_size: int,
     ) -> None:
         text_edit = QPlainTextEdit()
+        text_edit.setMinimumWidth(140)
+        text_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         text_edit.setPlainText(model.text)
         text_edit.setMinimumHeight(120)
 
         font_size_spin = QSpinBox()
+        self.constrain_field_width(font_size_spin)
         font_size_spin.setRange(freetext_font_size_min, freetext_font_size_max)
         font_size = round(model.font_size or default_freetext_font_size)
         font_size_spin.setValue(max(freetext_font_size_min, min(freetext_font_size_max, font_size)))
 
         color_combo = self.create_color_combo(model.color, "Red")
+        self.apply_text_edit_color(text_edit, ANNOTATION_COLORS[color_combo.currentText()])
         form.addRow("Text", text_edit)
         form.addRow("Font size", font_size_spin)
         form.addRow("Color", color_combo)
@@ -148,7 +182,9 @@ class AnnotationPropertiesWidget(QWidget):
             text = text_edit.toPlainText()
             if not text.strip():
                 return
-            self.on_freetext_change(text, font_size_spin.value(), ANNOTATION_COLORS[color_combo.currentText()])
+            color = ANNOTATION_COLORS[color_combo.currentText()]
+            self.apply_text_edit_color(text_edit, color)
+            self.on_freetext_change(text, font_size_spin.value(), color)
 
         text_edit.textChanged.connect(apply)
         font_size_spin.valueChanged.connect(lambda _value: apply())
@@ -157,6 +193,7 @@ class AnnotationPropertiesWidget(QWidget):
     def populate_stroked_properties(self, form: QFormLayout, model: AnnotationModel) -> None:
         color_combo = self.create_color_combo(model.color, "Red")
         width_spin = QSpinBox()
+        self.constrain_field_width(width_spin)
         width_spin.setRange(1, 10)
         width_spin.setValue(max(1, min(10, int(round(model.border_width or 1)))))
         label = "Border width" if model.app_type == "square" else "Line width"
@@ -173,9 +210,16 @@ class AnnotationPropertiesWidget(QWidget):
 
     def create_color_combo(self, color: tuple | None, fallback_name: str) -> QComboBox:
         combo = QComboBox()
+        self.constrain_field_width(combo)
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(8)
         combo.addItems(ANNOTATION_COLORS.keys())
         combo.setCurrentText(self.color_name_for_tuple(color) if color else fallback_name)
         return combo
+
+    def apply_text_edit_color(self, text_edit: QPlainTextEdit, color: tuple[float, float, float]) -> None:
+        red, green, blue = (max(0, min(255, int(round(channel * 255)))) for channel in color[:3])
+        text_edit.setStyleSheet(f"QPlainTextEdit {{ color: #{red:02X}{green:02X}{blue:02X}; }}")
 
     def color_name_for_tuple(self, color: tuple | None) -> str:
         if not color:

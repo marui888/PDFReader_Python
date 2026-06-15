@@ -5,7 +5,7 @@ import shutil
 import sys
 import tempfile
 from datetime import datetime
-from math import atan2, cos, pi, sin
+from math import atan2, ceil, cos, pi, sin
 from pathlib import Path
 
 import pymupdf as fitz
@@ -52,6 +52,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
+    QSizePolicy,
     QSpinBox,
     QTabBar,
     QTabWidget,
@@ -165,6 +166,12 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(self.document_tabs)
         central_layout.addWidget(self.view, 1)
         self.setCentralWidget(central_widget)
+        self.scroll_boundary_label = QLabel("")
+        self.scroll_boundary_label.setVisible(False)
+        self.scroll_boundary_label.setStyleSheet(
+            "QLabel { color: white; background: rgb(190, 80, 0); padding: 2px 8px; font-weight: 700; }"
+        )
+        self.statusBar().addPermanentWidget(self.scroll_boundary_label)
 
         self.update_window_title()
         self.resize(1200, 850)
@@ -271,6 +278,9 @@ class MainWindow(QMainWindow):
         self.debug_current_page_state_action = QAction("Debug Current Page State", self)
         self.debug_current_page_state_action.triggered.connect(self.debug_current_page_state)
 
+        self.debug_selected_annotation_pdf_object_action = QAction("Debug Selected Annotation PDF Object", self)
+        self.debug_selected_annotation_pdf_object_action.triggered.connect(self.debug_selected_annotation_pdf_object)
+
     def create_menus(self) -> None:
         file_menu = self.menuBar().addMenu("File")
         file_menu.addAction(self.open_action)
@@ -304,6 +314,7 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(self.search_annotations_action)
         tools_menu.addSeparator()
         tools_menu.addAction(self.debug_current_page_state_action)
+        tools_menu.addAction(self.debug_selected_annotation_pdf_object_action)
         tools_menu.addAction(self.debug_log_action)
 
     def create_toolbar(self) -> None:
@@ -354,6 +365,9 @@ class MainWindow(QMainWindow):
             action.setEnabled(has_doc)
         self.delete_annotation_action.setEnabled(has_doc and self.selected_annotation_id is not None)
         self.edit_annotation_action.setEnabled(has_doc and self.selected_annotation_id is not None)
+        self.debug_selected_annotation_pdf_object_action.setEnabled(
+            has_doc and self.selected_annotation_id is not None
+        )
         self.undo_action_qt.setEnabled(has_doc and self.undo_action is not None)
         self.clear_annotation_index_action.setEnabled(not is_reindexing)
         self.index_database_info_action.setEnabled(not is_reindexing)
@@ -363,6 +377,7 @@ class MainWindow(QMainWindow):
             self.close_action.setEnabled(False)
             self.delete_annotation_action.setEnabled(False)
             self.edit_annotation_action.setEnabled(False)
+            self.debug_selected_annotation_pdf_object_action.setEnabled(False)
             self.undo_action_qt.setEnabled(False)
             self.page_spin.setEnabled(False)
             self.page_spin.setMaximum(1)
@@ -913,10 +928,12 @@ class MainWindow(QMainWindow):
             return
         self.open_pdf_path(path, self.recent_page_index(path))
 
-    def render_page(self, preserve_selection: bool = False) -> None:
+    def render_page(self, preserve_selection: bool = False, keep_view_position: bool = False) -> None:
         if self.doc is None:
             return
 
+        horizontal_value = self.view.horizontalScrollBar().value()
+        vertical_value = self.view.verticalScrollBar().value()
         self.text_lines_cache_page_index = None
         self.text_lines_cache = None
         selected_annotation_id = self.selected_annotation_id if preserve_selection else None
@@ -928,7 +945,11 @@ class MainWindow(QMainWindow):
         self.page_item.setPixmap(QPixmap.fromImage(image))
         self.scene.setSceneRect(self.page_item.boundingRect())
         self.render_annotation_overlay()
-        self.view.centerOn(self.page_item)
+        if keep_view_position:
+            self.view.horizontalScrollBar().setValue(horizontal_value)
+            self.view.verticalScrollBar().setValue(vertical_value)
+        else:
+            self.view.centerOn(self.page_item)
 
         supported_count = sum(1 for annot in self.current_annotations if annot.is_supported)
         unsupported_count = len(self.current_annotations) - supported_count
@@ -941,9 +962,31 @@ class MainWindow(QMainWindow):
         self.refresh_annotations_table()
         self.sync_page_spin()
         self.update_actions()
+        if hasattr(self.view, "reset_boundary_turn_state"):
+            self.view.reset_boundary_turn_state(clear_status=False)
+        self.clear_scroll_boundary_status()
         if selected_annotation_id in self.annotation_model_map:
             self.select_annotation(selected_annotation_id)
         self.save_active_session_state()
+
+    def show_scroll_boundary_status(self, direction: str) -> None:
+        if direction == "up":
+            self.scroll_boundary_label.setText("已到顶")
+            self.scroll_boundary_label.setStyleSheet(
+                "QLabel { color: white; background: rgb(30, 120, 190); padding: 2px 8px; font-weight: 700; }"
+            )
+        elif direction == "down":
+            self.scroll_boundary_label.setText("已到底")
+            self.scroll_boundary_label.setStyleSheet(
+                "QLabel { color: white; background: rgb(190, 80, 0); padding: 2px 8px; font-weight: 700; }"
+            )
+        else:
+            self.scroll_boundary_label.setText("")
+        self.scroll_boundary_label.setVisible(bool(self.scroll_boundary_label.text()))
+
+    def clear_scroll_boundary_status(self) -> None:
+        self.scroll_boundary_label.clear()
+        self.scroll_boundary_label.setVisible(False)
 
     def render_annotation_overlay(self) -> None:
         self.clear_annotation_items()
@@ -975,7 +1018,6 @@ class MainWindow(QMainWindow):
         item.setZValue(10)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         if self.is_draggable_model(model):
-            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
             item.setCursor(Qt.CursorShape.SizeAllCursor)
         item.setData(0, model.id)
         item.setData(1, item.pos())
@@ -987,7 +1029,6 @@ class MainWindow(QMainWindow):
         item.setOpacity(0.01)
         item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
         if self.is_draggable_model(model):
-            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
             item.setCursor(Qt.CursorShape.SizeAllCursor)
         item.setData(0, model.id)
         item.setData(1, item.pos())
@@ -1124,6 +1165,21 @@ class MainWindow(QMainWindow):
             if item.data(3) == annotation_id and item.data(2) in {"resize-handle", "arrow-endpoint-handle"}:
                 item.setData(5, item.pos())
 
+    def restore_annotation_drag_preview(self, annotation_id: str) -> None:
+        for item in self.annotation_item_map.get(annotation_id, []):
+            start_pos = item.data(1)
+            if isinstance(start_pos, QPointF) and item.pos() != start_pos:
+                item.setPos(start_pos)
+
+        for item in self.selection_items:
+            if item.data(3) != annotation_id:
+                continue
+            if item.data(2) == "selection-rect" and item.pos() != QPointF(0, 0):
+                item.setPos(QPointF(0, 0))
+
+    def is_intentional_annotation_move(self, delta: QPointF) -> bool:
+        return abs(delta.x()) >= 3.0 or abs(delta.y()) >= 3.0
+
     def on_scene_mouse_release(self, scene_pos: QPointF | None = None) -> None:
         if self.doc is None or self.selected_annotation_id is None:
             return
@@ -1140,8 +1196,10 @@ class MainWindow(QMainWindow):
         ):
             delta = scene_pos - self.active_scene_drag_start_pos
             controller = AnnotationInteractionController(self.zoom)
-            if not controller.is_small_delta(delta):
+            if self.is_intentional_annotation_move(delta) and not controller.is_small_delta(delta):
                 interaction = controller.interaction_from_delta("move", delta)
+            else:
+                self.restore_annotation_drag_preview(model.id)
         else:
             interaction = AnnotationInteractionController(self.zoom).interaction_for_mouse_release(
                 model,
@@ -1160,10 +1218,10 @@ class MainWindow(QMainWindow):
                 self.record_geometry_undo(f"Resize {model.pdf_type}", model)
                 self.resize_rect_annotation(model, interaction.handle, interaction.dx_pdf, interaction.dy_pdf)
                 self.mark_dirty()
-                self.render_page(preserve_selection=True)
+                self.render_page(preserve_selection=True, keep_view_position=True)
                 self.statusBar().showMessage(f"Resized {model.pdf_type} xref={model.xref}. Use Save to persist.")
             except Exception as exc:
-                self.render_page(preserve_selection=True)
+                self.render_page(preserve_selection=True, keep_view_position=True)
                 self.show_error("Resize annotation failed", exc)
             return
 
@@ -1172,10 +1230,10 @@ class MainWindow(QMainWindow):
                 self.record_geometry_undo("Move Arrow endpoint", model)
                 self.move_arrow_endpoint(model, interaction.handle, interaction.dx_pdf, interaction.dy_pdf)
                 self.mark_dirty()
-                self.render_page(preserve_selection=True)
+                self.render_page(preserve_selection=True, keep_view_position=True)
                 self.statusBar().showMessage(f"Moved Arrow endpoint xref={model.xref}. Use Save to persist.")
             except Exception as exc:
-                self.render_page(preserve_selection=True)
+                self.render_page(preserve_selection=True, keep_view_position=True)
                 self.show_error("Move arrow endpoint failed", exc)
             return
 
@@ -1184,10 +1242,10 @@ class MainWindow(QMainWindow):
                 self.record_geometry_undo(f"Move {model.pdf_type}", model)
                 self.move_pdf_annotation(model, interaction.dx_pdf, interaction.dy_pdf)
                 self.mark_dirty()
-                self.render_page(preserve_selection=True)
+                self.render_page(preserve_selection=True, keep_view_position=True)
                 self.statusBar().showMessage(f"Moved {model.pdf_type} xref={model.xref}. Use Save to persist.")
             except Exception as exc:
-                self.render_page(preserve_selection=True)
+                self.render_page(preserve_selection=True, keep_view_position=True)
                 self.show_error("Move annotation failed", exc)
 
     def record_geometry_undo(self, label: str, model: AnnotationModel) -> None:
@@ -1243,7 +1301,7 @@ class MainWindow(QMainWindow):
             self.undo_action = None
             self.page_index = max(0, min(action.page_index, len(self.doc) - 1))
             self.mark_dirty()
-            self.render_page(preserve_selection=True)
+            self.render_page(preserve_selection=True, keep_view_position=True)
             if restored_xref is not None:
                 self.select_annotation_by_xref(restored_xref)
             self.statusBar().showMessage(f"Undid {action.label} xref={action.xref}. Use Save to persist.")
@@ -1358,6 +1416,11 @@ class MainWindow(QMainWindow):
             return
 
         if self.active_scene_drag_kind == "move":
+            if scene_pos is not None and self.active_scene_drag_start_pos is not None:
+                delta = scene_pos - self.active_scene_drag_start_pos
+                if not self.is_intentional_annotation_move(delta):
+                    self.restore_annotation_drag_preview(model.id)
+                    return
             self.update_annotation_move_preview(model, scene_pos)
         if model.app_type not in {"square", "freetext"}:
             return
@@ -1537,7 +1600,7 @@ class MainWindow(QMainWindow):
         annot.update(
             fontsize=model.font_size or self.default_freetext_font_size,
             fontname="helv",
-            text_color=(1, 0, 0),
+            text_color=model.color or (1, 0, 0),
             fill_color=None,
             border_color=None,
         )
@@ -1693,14 +1756,14 @@ class MainWindow(QMainWindow):
             annot = self.find_page_annotation_by_xref(page, model.xref)
             if annot is None:
                 QMessageBox.warning(self, "Delete Annotation", "The selected annotation was not found on this page.")
-                self.render_page()
+                self.render_page(keep_view_position=True)
                 return
 
             self.record_delete_undo(model)
             page.delete_annot(annot)
             self.mark_dirty()
             self.selected_annotation_id = None
-            self.render_page()
+            self.render_page(keep_view_position=True)
             self.statusBar().showMessage(f"Deleted annotation xref={model.xref}. Use Save to persist.")
         except Exception as exc:
             self.show_error("Delete annotation failed", exc)
@@ -1807,6 +1870,11 @@ class MainWindow(QMainWindow):
         if annot is None:
             raise RuntimeError("The selected annotation was not found on this page.")
 
+        new_width, new_height = self.estimated_freetext_size(text, font_size)
+        page_rect = self.current_page().rect
+        x0 = max(page_rect.x0, min(model.rect.x0, page_rect.x1 - new_width))
+        y0 = max(page_rect.y0, min(model.rect.y0, page_rect.y1 - new_height))
+        annot.set_rect(fitz.Rect(x0, y0, x0 + new_width, y0 + new_height))
         annot.set_info(title="PDF Note Reader", content=text)
         annot.set_border(width=0)
         annot.update(fontsize=font_size, fontname="helv", text_color=color, fill_color=None, border_color=None)
@@ -1909,6 +1977,8 @@ class MainWindow(QMainWindow):
     def show_current_page_annotations(self) -> None:
         if self.annotations_dock is None:
             self.annotations_dock = QDockWidget("Annotations", self)
+            self.annotations_dock.setMinimumWidth(320)
+            self.annotations_dock.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
             self.annotations_dock.setAllowedAreas(
                 Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
             )
@@ -1919,6 +1989,8 @@ class MainWindow(QMainWindow):
             )
 
             self.annotations_tabs = QTabWidget()
+            self.annotations_tabs.setMinimumWidth(300)
+            self.annotations_tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.annotations_tabs.setTabPosition(QTabWidget.TabPosition.East)
 
             self.annotations_table = AnnotationListWidget(self.rect_text, self.annotation_note)
@@ -1935,6 +2007,7 @@ class MainWindow(QMainWindow):
             self.annotations_tabs.addTab(self.properties_page, "Properties")
             self.annotations_dock.setWidget(self.annotations_tabs)
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.annotations_dock)
+            self.resizeDocks([self.annotations_dock], [340], Qt.Orientation.Horizontal)
 
         self.show_dock(self.annotations_dock)
         self.refresh_annotations_table()
@@ -2340,6 +2413,89 @@ class MainWindow(QMainWindow):
             self.log_debug(line)
         self.show_debug_log()
 
+    def debug_selected_annotation_pdf_object(self) -> None:
+        if self.doc is None or self.selected_annotation_id is None:
+            return
+        model = self.annotation_model_map.get(self.selected_annotation_id)
+        if model is None:
+            self.log_debug("Debug Selected Annotation PDF Object skipped: selected model not found")
+            self.show_debug_log()
+            return
+
+        page = self.current_page()
+        annot = self.find_page_annotation_by_xref(page, model.xref)
+        if annot is None:
+            self.log_debug(f"Debug Selected Annotation PDF Object skipped: xref={model.xref} not found on page")
+            self.show_debug_log()
+            return
+
+        lines = self.build_selected_annotation_pdf_object_debug_lines(model, annot)
+        for line in lines:
+            self.log_debug(line)
+        self.show_debug_log()
+
+    def build_selected_annotation_pdf_object_debug_lines(
+        self, model: AnnotationModel, annot: fitz.Annot
+    ) -> list[str]:
+        lines = [
+            "Debug Selected Annotation PDF Object",
+            f"  file: {self.pdf_path}",
+            f"  page: {self.page_index + 1}/{len(self.doc)}",
+            f"  selected_annotation_id: {self.selected_annotation_id}",
+            f"  xref: {model.xref}",
+            f"  pdf_type/app_type: {model.pdf_type} / {model.app_type}",
+            f"  model rect: {self.rect_text(model.rect)}",
+            f"  model text: {model.text!r}",
+            f"  model color: {model.color}",
+            f"  model border_width: {model.border_width}",
+            f"  model font_size: {model.font_size}",
+            f"  model opacity: {model.opacity}",
+            f"  model vertices/quad_points: {model.quad_points}",
+            f"  model line_start/line_end: {model.line_start} / {model.line_end}",
+            f"  annot.info: {annot.info}",
+            f"  annot.colors: {annot.colors}",
+            f"  annot.border: {annot.border}",
+        ]
+        try:
+            lines.append(f"  annot.opacity: {annot.opacity}")
+        except Exception as exc:
+            lines.append(f"  annot.opacity error: {exc}")
+        try:
+            lines.append(f"  annot.vertices: {getattr(annot, 'vertices', None)}")
+        except Exception as exc:
+            lines.append(f"  annot.vertices error: {exc}")
+
+        for key in ("Subtype", "Rect", "DA", "AP", "DS", "RC", "IT", "Q", "Contents", "Subj", "T"):
+            lines.append(f"  /{key}: {self.annotation_xref_key(model.xref, key)}")
+
+        lines.append("  raw object:")
+        lines.extend(self.annotation_raw_object_lines(model.xref, max_lines=80))
+        return lines
+
+    def annotation_xref_key(self, xref: int, key: str) -> str:
+        if self.doc is None:
+            return "(no document)"
+        try:
+            key_type, value = self.doc.xref_get_key(xref, key)
+        except Exception as exc:
+            return f"(error: {exc})"
+        if key_type == "null":
+            return "null"
+        return f"{key_type}: {value}"
+
+    def annotation_raw_object_lines(self, xref: int, max_lines: int = 80) -> list[str]:
+        if self.doc is None:
+            return ["    (no document)"]
+        try:
+            source = self.doc.xref_object(xref, compressed=False)
+        except Exception as exc:
+            return [f"    (error: {exc})"]
+        raw_lines = source.splitlines()
+        output = [f"    {line}" for line in raw_lines[:max_lines]]
+        if len(raw_lines) > max_lines:
+            output.append(f"    ... {len(raw_lines) - max_lines} more lines")
+        return output
+
     def log_current_page_state_snapshot(self, title: str) -> None:
         for line in self.build_current_page_state_debug_lines(title):
             self.log_debug(line)
@@ -2690,19 +2846,30 @@ class MainWindow(QMainWindow):
             return
 
         rect = self.default_freetext_rect(point, text.strip(), self.default_freetext_font_size)
-        self.create_freetext_annotation(rect, text.strip())
+        return self.create_freetext_annotation(rect, text.strip())
 
     def default_freetext_rect(self, point: tuple[float, float], text: str, font_size: int) -> fitz.Rect:
         page_rect = self.current_page().rect
-        width = min(260.0, max(20.0, page_rect.width))
-        line_count = max(1, len(text.splitlines()))
-        height = max(40.0, line_count * font_size * 1.6 + 16.0)
+        width, height = self.estimated_freetext_size(text, font_size)
         height = min(height, max(12.0, page_rect.height))
         x0 = min(max(page_rect.x0, point[0]), page_rect.x1 - width)
         y0 = min(max(page_rect.y0, point[1]), page_rect.y1 - height)
         return fitz.Rect(x0, y0, x0 + width, y0 + height)
 
-    def create_freetext_annotation(self, rect: fitz.Rect, text: str) -> None:
+    def estimated_freetext_size(self, text: str, font_size: int) -> tuple[float, float]:
+        width = min(260.0, max(30.0, self.estimated_freetext_width(text, font_size) + 8.0))
+        line_count = max(1, len(text.splitlines()))
+        height = ceil(max(10.0, line_count * font_size * 1.15 + 2.0))
+        return width, float(height)
+
+    def estimated_freetext_width(self, text: str, font_size: int) -> float:
+        longest_line = max(text.splitlines() or [text], key=len)
+        width = 0.0
+        for char in longest_line:
+            width += font_size * (1.05 if ord(char) > 127 else 0.58)
+        return width
+
+    def create_freetext_annotation(self, rect: fitz.Rect, text: str) -> int:
         page = self.current_page()
         annot = page.add_freetext_annot(
             rect,
@@ -2807,10 +2974,16 @@ class MainWindow(QMainWindow):
         for box in selected_boxes[1:]:
             line_rect |= box
 
+        expanded_rect = self.expand_highlight_rect(line_rect)
         metric_rect = self.highlight_metric_rect(selected_chars, line_rect)
         if metric_rect is not None:
-            return metric_rect
-        return self.tighten_highlight_rect(line_rect)
+            return fitz.Rect(
+                line_rect.x0,
+                min(metric_rect.y0, expanded_rect.y0),
+                line_rect.x1,
+                max(metric_rect.y1, expanded_rect.y1),
+            )
+        return expanded_rect
 
     def highlight_metric_rect(self, selected_chars: list[dict], line_rect: fitz.Rect) -> fitz.Rect | None:
         metric_chars = [
@@ -2831,8 +3004,8 @@ class MainWindow(QMainWindow):
             size = float(char["size"])
             ascender = float(char["ascender"])
             descender = abs(float(char["descender"]))
-            top_values.append(baseline_y - size * ascender * 0.62)
-            bottom_values.append(baseline_y + size * descender * 0.75)
+            top_values.append(baseline_y - size * ascender * 0.82)
+            bottom_values.append(baseline_y + size * descender * 0.9)
 
         top = sum(top_values) / len(top_values)
         bottom = sum(bottom_values) / len(bottom_values)
@@ -2840,13 +3013,8 @@ class MainWindow(QMainWindow):
             return None
         return fitz.Rect(line_rect.x0, top, line_rect.x1, bottom)
 
-    def tighten_highlight_rect(self, rect: fitz.Rect) -> fitz.Rect:
-        height = rect.height
-        top = rect.y0 + height * 0.18
-        bottom = rect.y1 - height * 0.14
-        if bottom <= top:
-            return rect
-        return fitz.Rect(rect.x0, top, rect.x1, bottom)
+    def expand_highlight_rect(self, rect: fitz.Rect) -> fitz.Rect:
+        return fitz.Rect(rect)
 
     def extract_text_lines(self, page: fitz.Page) -> list[list[dict]]:
         raw = page.get_text("rawdict")

@@ -86,7 +86,7 @@ class AnnotationRepository:
     def annotation_to_model(self, page_index: int, annot: fitz.Annot) -> AnnotationModel:
         pdf_type = annot.type[1] if annot.type and len(annot.type) > 1 else str(annot.type[0])
         app_type = self.classify_annotation(annot, pdf_type)
-        color = self.annotation_color(annot)
+        color = self.annotation_color(annot, pdf_type)
         border_width = self.annotation_border_width(annot)
         font_size = self.annotation_font_size(annot)
         opacity = self.annotation_opacity(annot)
@@ -127,9 +127,46 @@ class AnnotationRepository:
         info = annot.info or {}
         return info.get("content") or info.get("subject") or ""
 
-    def annotation_color(self, annot: fitz.Annot) -> tuple | None:
+    def annotation_color(self, annot: fitz.Annot, pdf_type: str = "") -> tuple | None:
+        if pdf_type == "FreeText":
+            text_color = self.freetext_text_color(annot)
+            if text_color is not None:
+                return text_color
         colors = annot.colors or {}
         return colors.get("stroke") or colors.get("fill")
+
+    def freetext_text_color(self, annot: fitz.Annot) -> tuple | None:
+        if not annot.xref:
+            return None
+
+        for key in ("RC", "DA", "DS"):
+            try:
+                key_type, value = self.doc.xref_get_key(annot.xref, key)
+            except Exception:
+                continue
+            if key_type == "null" or not value:
+                continue
+            color = self.parse_freetext_color_value(value)
+            if color is not None:
+                return color
+        return None
+
+    def parse_freetext_color_value(self, value: str) -> tuple | None:
+        # FreeText text color is commonly stored either in /DA as "r g b rg"
+        # or in /DS as CSS-like "color:#RRGGBB".
+        rgb_match = re.search(
+            r"(?<!\S)(\d*\.?\d+)\s+(\d*\.?\d+)\s+(\d*\.?\d+)\s+rg(?:\s|$)",
+            value,
+        )
+        if rgb_match:
+            channels = tuple(max(0.0, min(1.0, float(rgb_match.group(index)))) for index in range(1, 4))
+            return channels
+
+        hex_match = re.search(r"color\s*:\s*#([0-9a-fA-F]{6})", value)
+        if hex_match:
+            hex_value = hex_match.group(1)
+            return tuple(int(hex_value[index : index + 2], 16) / 255 for index in (0, 2, 4))
+        return None
 
     def annotation_border_width(self, annot: fitz.Annot) -> float | None:
         border = annot.border or {}
