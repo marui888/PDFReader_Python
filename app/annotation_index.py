@@ -8,6 +8,7 @@ from pathlib import Path
 import pymupdf as fitz
 
 from app.annotation_repository import AnnotationRepository
+from app.annotation_search_query import AnnotationSearchQuery
 
 
 @dataclass
@@ -218,7 +219,7 @@ class AnnotationIndex:
 
     def search(
         self,
-        keyword: str,
+        keyword: str | AnnotationSearchQuery,
         app_type: str | None = None,
         limit: int | None = None,
         document_paths: list[str] | None = None,
@@ -227,25 +228,18 @@ class AnnotationIndex:
 
     def search_with_timing(
         self,
-        keyword: str,
+        keyword: str | AnnotationSearchQuery,
         app_type: str | None = None,
         limit: int | None = None,
         document_paths: list[str] | None = None,
     ) -> AnnotationSearchResponse:
-        keyword = keyword.strip()
+        search_query = self.normalize_search_query(keyword)
         parameters: list[object] = []
         where = []
-        if keyword:
-            where.append(
-                "("
-                "annotations.text LIKE ? "
-                "OR annotations.content_text LIKE ? "
-                "OR annotations.subject_text LIKE ? "
-                "OR annotations.selected_text LIKE ?"
-                ")"
-            )
-            like_keyword = f"%{keyword}%"
-            parameters.extend((like_keyword, like_keyword, like_keyword, like_keyword))
+        text_where, text_parameters = self.text_search_where(search_query)
+        if text_where:
+            where.append(text_where)
+            parameters.extend(text_parameters)
         if app_type:
             where.append("annotations.app_type = ?")
             parameters.append(app_type)
@@ -304,6 +298,50 @@ class AnnotationIndex:
         ]
         build_ms = (time.perf_counter() - build_started) * 1000
         return AnnotationSearchResponse(results=results, sqlite_ms=sqlite_ms, build_ms=build_ms)
+
+    def normalize_search_query(self, keyword: str | AnnotationSearchQuery) -> AnnotationSearchQuery:
+        if isinstance(keyword, AnnotationSearchQuery):
+            return keyword
+        return AnnotationSearchQuery(keyword=str(keyword or ""))
+
+    def text_search_where(self, query: AnnotationSearchQuery) -> tuple[str, list[object]]:
+        parameters: list[object] = []
+        clauses: list[str] = []
+        include_terms = query.include_terms()
+        exclude_terms = query.exclude_terms()
+
+        if include_terms:
+            include_clauses = []
+            for term in include_terms:
+                include_clauses.append(self.any_text_column_like_clause())
+                parameters.extend(self.like_parameters(term))
+            joiner = " OR " if query.normalized_include_mode() == "any" else " AND "
+            clauses.append("(" + joiner.join(include_clauses) + ")")
+        else:
+            keyword = query.normalized_keyword()
+            if keyword:
+                clauses.append(self.any_text_column_like_clause())
+                parameters.extend(self.like_parameters(keyword))
+
+        for term in exclude_terms:
+            clauses.append("NOT " + self.any_text_column_like_clause())
+            parameters.extend(self.like_parameters(term))
+
+        return (" AND ".join(clauses), parameters)
+
+    def any_text_column_like_clause(self) -> str:
+        return (
+            "("
+            "COALESCE(annotations.text, '') LIKE ? "
+            "OR COALESCE(annotations.content_text, '') LIKE ? "
+            "OR COALESCE(annotations.subject_text, '') LIKE ? "
+            "OR COALESCE(annotations.selected_text, '') LIKE ?"
+            ")"
+        )
+
+    def like_parameters(self, term: str) -> tuple[str, str, str, str]:
+        value = f"%{term}%"
+        return (value, value, value, value)
 
     def document_status(self, path: Path) -> DocumentIndexStatus:
         path_text = str(path)

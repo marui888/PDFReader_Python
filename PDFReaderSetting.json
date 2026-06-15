@@ -11,14 +11,19 @@
   "freetext_font_size_max": 20,
   "recent_files": [
     {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
-      "last_page_index": 337,
-      "last_opened_at": "2026-06-16T02:08:58+08:00"
+      "path": "D:\\prj_PDFReader\\pdfdoc\\\u5e8f\u53f7\u5b57\u7b26\u529f\u80fd\u6d4b\u8bd51.pdf",
+      "last_page_index": 37,
+      "last_opened_at": "2026-06-16T07:01:24+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
-      "last_page_index": 472,
-      "last_opened_at": "2026-06-16T02:08:57+08:00"
+      "last_page_index": 421,
+      "last_opened_at": "2026-06-16T06:41:57+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
+      "last_page_index": 337,
+      "last_opened_at": "2026-06-16T02:41:02+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\Communist Manifesto (Karl Marx, Friedrich Engels, David McLellan) (z-library.sk, 1lib.sk, z-lib.sk)_annotated.pdf",
@@ -40,6 +45,9 @@
       "last_page_index": 46,
       "last_opened_at": "2026-06-15T05:40:41+08:00"
     }
+  ],
+  "recent_search_rule_files": [
+    "D:\\prj_PDFReader\\search_rules\\advanced-search-rule.json"
   ],
   "search_page_size": 500,
   "use_foxit_freetext": false

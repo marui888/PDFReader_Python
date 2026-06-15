@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
     QLabel,
+    QPushButton,
     QPlainTextEdit,
     QSizePolicy,
     QSpinBox,
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from app.anchors import is_anchor_text, references_in_text
 from app.models import ANNOTATION_COLORS, AnnotationModel
 
 
@@ -22,12 +24,18 @@ class AnnotationPropertiesWidget(QWidget):
         on_highlight_default: Callable[[tuple[float, float, float], float], None],
         on_freetext_change: Callable[[str, int, tuple[float, float, float]], None],
         on_stroked_change: Callable[[tuple[float, float, float], int], None],
+        on_reference_go: Callable[[str], None] | None = None,
+        on_serial_add: Callable[[], None] | None = None,
+        on_serial_remove: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self.on_highlight_change = on_highlight_change
         self.on_highlight_default = on_highlight_default
         self.on_freetext_change = on_freetext_change
         self.on_stroked_change = on_stroked_change
+        self.on_reference_go = on_reference_go
+        self.on_serial_add = on_serial_add
+        self.on_serial_remove = on_serial_remove
         self.updating = False
         self.setMinimumWidth(300)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
@@ -175,6 +183,8 @@ class AnnotationPropertiesWidget(QWidget):
         form.addRow("Text", text_edit)
         form.addRow("Font size", font_size_spin)
         form.addRow("Color", color_combo)
+        self.add_freetext_serial_controls(form, model.text)
+        self.add_freetext_references(form, model.text)
 
         def apply() -> None:
             if self.updating:
@@ -189,6 +199,40 @@ class AnnotationPropertiesWidget(QWidget):
         text_edit.textChanged.connect(apply)
         font_size_spin.valueChanged.connect(lambda _value: apply())
         color_combo.currentTextChanged.connect(lambda _text: apply())
+
+    def add_freetext_serial_controls(self, form: QFormLayout, text: str) -> None:
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        add_button = QPushButton("Add Serial Number")
+        remove_button = QPushButton("Remove Serial Number")
+        has_serial = is_anchor_text(text)
+        add_button.setEnabled(not has_serial and self.on_serial_add is not None)
+        remove_button.setEnabled(has_serial and self.on_serial_remove is not None)
+        add_button.clicked.connect(lambda: self.on_serial_add() if self.on_serial_add is not None else None)
+        remove_button.clicked.connect(lambda: self.on_serial_remove() if self.on_serial_remove is not None else None)
+        layout.addWidget(add_button)
+        layout.addWidget(remove_button)
+        form.addRow("Serial", container)
+
+    def add_freetext_references(self, form: QFormLayout, text: str) -> None:
+        references = list(dict.fromkeys(references_in_text(text)))
+        if not references:
+            return
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        for reference in references:
+            button = QPushButton(f"Go {reference}")
+            button.setEnabled(self.on_reference_go is not None)
+            button.clicked.connect(lambda _checked=False, value=reference: self.go_to_reference(value))
+            layout.addWidget(button)
+        form.addRow("References", container)
+
+    def go_to_reference(self, reference: str) -> None:
+        if self.on_reference_go is not None:
+            self.on_reference_go(reference)
 
     def populate_stroked_properties(self, form: QFormLayout, model: AnnotationModel) -> None:
         color_combo = self.create_color_combo(model.color, "Red")
@@ -220,6 +264,14 @@ class AnnotationPropertiesWidget(QWidget):
     def apply_text_edit_color(self, text_edit: QPlainTextEdit, color: tuple[float, float, float]) -> None:
         red, green, blue = (max(0, min(255, int(round(channel * 255)))) for channel in color[:3])
         text_edit.setStyleSheet(f"QPlainTextEdit {{ color: #{red:02X}{green:02X}{blue:02X}; }}")
+
+    def insert_text_into_freetext_editor(self, text: str) -> bool:
+        text_edit = self.findChild(QPlainTextEdit)
+        if text_edit is None or not text_edit.isVisible():
+            return False
+        text_edit.insertPlainText(text)
+        text_edit.setFocus()
+        return True
 
     def color_name_for_tuple(self, color: tuple | None) -> str:
         if not color:

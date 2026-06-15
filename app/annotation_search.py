@@ -13,6 +13,9 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QLineEdit,
+    QFileDialog,
+    QMenu,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QTableWidget,
@@ -22,10 +25,16 @@ from PySide6.QtWidgets import (
 )
 
 from app.annotation_index import AnnotationSearchResult
+from app.annotation_search_query import (
+    AnnotationSearchQuery,
+    build_search_query,
+    load_search_rule,
+    save_search_rule,
+)
 
 
 class AnnotationSearchWidget(QWidget):
-    search_requested = Signal(str, object, object)
+    search_requested = Signal(object, object, object)
     result_activated = Signal(str, int, int)
     maximize_requested = Signal()
 
@@ -36,6 +45,12 @@ class AnnotationSearchWidget(QWidget):
         self.current_page_index = 0
         self.indexed_files: list[tuple[str, str]] = []
         self.selected_document_paths: set[str] = set()
+        self.include_mode = "all"
+        self.include_text = ""
+        self.exclude_text = ""
+        self.search_rule_dir = Path.cwd() / "search_rules"
+        self.recent_search_rule_files: list[str] = []
+        self.recent_search_rules_changed: Callable[[list[str]], None] | None = None
         self.search_input = QLineEdit()
         self.search_input.setPlaceholderText("Search annotation text")
         self.type_combo = QComboBox()
@@ -46,6 +61,7 @@ class AnnotationSearchWidget(QWidget):
         self.type_combo.addItem("Arrow", "arrow")
         self.type_combo.addItem("Unsupported", "unsupported")
         self.file_filter_button = QPushButton("All files")
+        self.advanced_button = QPushButton("Advanced...")
         self.search_button = QPushButton("Search")
         self.maximize_button = QPushButton("Maximize")
         self.maximize_button.setEnabled(False)
@@ -59,6 +75,7 @@ class AnnotationSearchWidget(QWidget):
         controls.addWidget(self.search_input, 1)
         controls.addWidget(self.type_combo)
         controls.addWidget(self.file_filter_button)
+        controls.addWidget(self.advanced_button)
         controls.addWidget(self.search_button)
         controls.addWidget(self.maximize_button)
 
@@ -86,6 +103,7 @@ class AnnotationSearchWidget(QWidget):
 
         self.search_button.clicked.connect(self.emit_search_requested)
         self.file_filter_button.clicked.connect(self.show_file_filter_dialog)
+        self.advanced_button.clicked.connect(self.show_advanced_search_dialog)
         self.maximize_button.clicked.connect(self.maximize_requested.emit)
         self.prev_button.clicked.connect(self.show_previous_page)
         self.next_button.clicked.connect(self.show_next_page)
@@ -93,9 +111,210 @@ class AnnotationSearchWidget(QWidget):
         self.table.itemDoubleClicked.connect(lambda _item: self.emit_result_activated())
         self.update_page_controls()
 
+    def set_search_rule_storage(
+        self,
+        rule_dir: Path,
+        recent_files: list[str],
+        recent_changed: Callable[[list[str]], None] | None = None,
+    ) -> None:
+        self.search_rule_dir = rule_dir
+        self.recent_search_rule_files = list(recent_files)
+        self.recent_search_rules_changed = recent_changed
+
     def emit_search_requested(self) -> None:
         selected_paths = sorted(self.selected_document_paths) if self.selected_document_paths else None
-        self.search_requested.emit(self.search_input.text(), self.type_combo.currentData(), selected_paths)
+        self.search_requested.emit(self.current_search_query(), self.type_combo.currentData(), selected_paths)
+
+    def current_search_query(self) -> AnnotationSearchQuery:
+        return build_search_query(
+            keyword=self.search_input.text(),
+            include_mode=self.include_mode,
+            include_text=self.include_text,
+            exclude_text=self.exclude_text,
+        )
+
+    def show_advanced_search_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Advanced Text Search")
+        dialog.setMinimumWidth(460)
+
+        layout = QVBoxLayout(dialog)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(QLabel("Include terms match"))
+        mode_combo = QComboBox()
+        mode_combo.addItem("All terms", "all")
+        mode_combo.addItem("Any term", "any")
+        mode_combo.setCurrentIndex(1 if self.include_mode == "any" else 0)
+        mode_row.addWidget(mode_combo, 1)
+        layout.addLayout(mode_row)
+
+        include_edit = QPlainTextEdit()
+        include_edit.setPlaceholderText("Terms to include. Separate with commas, semicolons, or new lines.")
+        include_edit.setPlainText(self.include_text)
+        include_edit.setMinimumHeight(90)
+        layout.addWidget(QLabel("Include"))
+        layout.addWidget(include_edit)
+
+        exclude_edit = QPlainTextEdit()
+        exclude_edit.setPlaceholderText("Terms to exclude. Separate with commas, semicolons, or new lines.")
+        exclude_edit.setPlainText(self.exclude_text)
+        exclude_edit.setMinimumHeight(70)
+        layout.addWidget(QLabel("Exclude"))
+        layout.addWidget(exclude_edit)
+
+        hint = QLabel("Advanced conditions override the quick keyword when Include terms are present.")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok
+            | QDialogButtonBox.StandardButton.Cancel
+            | QDialogButtonBox.StandardButton.Reset
+        )
+        rule_buttons = QHBoxLayout()
+        save_button = QPushButton("Save...")
+        load_button = QPushButton("Load...")
+        recent_button = QPushButton("Recent")
+        rule_buttons.addWidget(save_button)
+        rule_buttons.addWidget(load_button)
+        rule_buttons.addWidget(recent_button)
+        rule_buttons.addStretch(1)
+        layout.addLayout(rule_buttons)
+        layout.addWidget(buttons)
+
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        reset_button = buttons.button(QDialogButtonBox.StandardButton.Reset)
+        if reset_button is not None:
+            reset_button.setText("Clear")
+            reset_button.clicked.connect(lambda: (include_edit.clear(), exclude_edit.clear()))
+
+        save_button.clicked.connect(
+            lambda: self.save_advanced_search_rule(mode_combo, include_edit, exclude_edit)
+        )
+        load_button.clicked.connect(
+            lambda: self.load_advanced_search_rule_from_dialog(mode_combo, include_edit, exclude_edit)
+        )
+        recent_button.clicked.connect(
+            lambda: self.show_recent_search_rules_menu(recent_button, mode_combo, include_edit, exclude_edit)
+        )
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        self.include_mode = mode_combo.currentData()
+        self.include_text = include_edit.toPlainText()
+        self.exclude_text = exclude_edit.toPlainText()
+        self.update_advanced_button()
+
+    def save_advanced_search_rule(
+        self,
+        mode_combo: QComboBox,
+        include_edit: QPlainTextEdit,
+        exclude_edit: QPlainTextEdit,
+    ) -> None:
+        self.search_rule_dir.mkdir(parents=True, exist_ok=True)
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Search Rule",
+            str(self.search_rule_dir / "advanced-search-rule.json"),
+            "Search rule (*.json)",
+        )
+        if not file_name:
+            return
+        path = Path(file_name)
+        if path.suffix.lower() != ".json":
+            path = path.with_suffix(".json")
+        save_search_rule(
+            path,
+            mode_combo.currentData(),
+            include_edit.toPlainText(),
+            exclude_edit.toPlainText(),
+            path.stem,
+        )
+        self.add_recent_search_rule_file(path)
+
+    def load_advanced_search_rule_from_dialog(
+        self,
+        mode_combo: QComboBox,
+        include_edit: QPlainTextEdit,
+        exclude_edit: QPlainTextEdit,
+    ) -> None:
+        self.search_rule_dir.mkdir(parents=True, exist_ok=True)
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Search Rule",
+            str(self.search_rule_dir),
+            "Search rule (*.json)",
+        )
+        if file_name:
+            self.load_advanced_search_rule(Path(file_name), mode_combo, include_edit, exclude_edit)
+
+    def show_recent_search_rules_menu(
+        self,
+        button: QPushButton,
+        mode_combo: QComboBox,
+        include_edit: QPlainTextEdit,
+        exclude_edit: QPlainTextEdit,
+    ) -> None:
+        menu = QMenu(self)
+        if not self.recent_search_rule_files:
+            action = menu.addAction("No recent rules")
+            action.setEnabled(False)
+        else:
+            for path_text in self.recent_search_rule_files:
+                path = Path(path_text)
+                action = menu.addAction(self.elided_file_name(path.name))
+                action.setToolTip(str(path))
+                action.triggered.connect(
+                    lambda _checked=False, rule_path=path: self.load_advanced_search_rule(
+                        rule_path,
+                        mode_combo,
+                        include_edit,
+                        exclude_edit,
+                    )
+                )
+            menu.addSeparator()
+            clear_action = menu.addAction("Clear Recent")
+            clear_action.triggered.connect(self.clear_recent_search_rule_files)
+        menu.exec(button.mapToGlobal(button.rect().bottomLeft()))
+
+    def load_advanced_search_rule(
+        self,
+        path: Path,
+        mode_combo: QComboBox,
+        include_edit: QPlainTextEdit,
+        exclude_edit: QPlainTextEdit,
+    ) -> None:
+        rule = load_search_rule(path)
+        mode_combo.setCurrentIndex(1 if rule["include_mode"] == "any" else 0)
+        include_edit.setPlainText(rule["include_text"])
+        exclude_edit.setPlainText(rule["exclude_text"])
+        self.add_recent_search_rule_file(path)
+
+    def add_recent_search_rule_file(self, path: Path) -> None:
+        path_text = str(path)
+        key = path_text.lower()
+        recent = [item for item in self.recent_search_rule_files if item.lower() != key]
+        recent.insert(0, path_text)
+        self.recent_search_rule_files = recent[:10]
+        if self.recent_search_rules_changed is not None:
+            self.recent_search_rules_changed(self.recent_search_rule_files)
+
+    def clear_recent_search_rule_files(self) -> None:
+        self.recent_search_rule_files = []
+        if self.recent_search_rules_changed is not None:
+            self.recent_search_rules_changed(self.recent_search_rule_files)
+
+    def update_advanced_button(self) -> None:
+        query = self.current_search_query()
+        count = len(query.conditions())
+        if count:
+            self.advanced_button.setText(f"Advanced ({count})")
+            self.advanced_button.setToolTip(query.summary())
+        else:
+            self.advanced_button.setText("Advanced...")
+            self.advanced_button.setToolTip("Configure include/exclude text conditions")
 
     def set_indexed_files(self, files: list[tuple[str, str]]) -> None:
         self.indexed_files = files
@@ -296,6 +515,10 @@ class AnnotationSearchWidget(QWidget):
 
     def reset_search_state(self) -> None:
         self.search_input.clear()
+        self.include_mode = "all"
+        self.include_text = ""
+        self.exclude_text = ""
+        self.update_advanced_button()
         self.type_combo.setCurrentIndex(0)
         self.clear_results()
 
@@ -313,6 +536,7 @@ class AnnotationSearchWidget(QWidget):
         self.search_input.setEnabled(not busy)
         self.type_combo.setEnabled(not busy)
         self.file_filter_button.setEnabled(not busy)
+        self.advanced_button.setEnabled(not busy)
         if busy:
             self.set_index_status("Indexing current PDF, please wait...", stale=True)
 

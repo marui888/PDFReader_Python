@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QKeyEvent, QPainter, QWheelEvent
+from PySide6.QtGui import QKeyEvent, QMouseEvent, QPainter, QWheelEvent
 from PySide6.QtWidgets import QGraphicsScene, QGraphicsView
 
 
@@ -32,8 +32,29 @@ class PdfCanvasView(QGraphicsView):
         self.reset_boundary_turn_state()
         super().wheelEvent(event)
 
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        if self.owner is not None:
+            if event.button() == Qt.MouseButton.BackButton:
+                self.owner.go_back_view()
+                event.accept()
+                return
+            if event.button() == Qt.MouseButton.ForwardButton:
+                self.owner.go_forward_view()
+                event.accept()
+                return
+        super().mousePressEvent(event)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self.owner is not None:
+            if event.modifiers() & Qt.KeyboardModifier.AltModifier:
+                if event.key() == Qt.Key.Key_Left:
+                    self.owner.go_back_view()
+                    event.accept()
+                    return
+                if event.key() == Qt.Key.Key_Right:
+                    self.owner.go_forward_view()
+                    event.accept()
+                    return
             if event.key() == Qt.Key.Key_PageUp and self.is_at_top():
                 self.handle_boundary_turn_intent(1)
                 event.accept()
@@ -98,24 +119,28 @@ class AnnotationScene(QGraphicsScene):
     def mousePressEvent(self, event) -> None:
         if self.owner.on_tool_mouse_press(event.scenePos()):
             return
-        self.owner.on_scene_mouse_press(event.scenePos())
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.owner.on_scene_mouse_press(event.scenePos())
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
         if self.owner.on_tool_mouse_move(event.scenePos()):
             return
         super().mouseMoveEvent(event)
-        self.owner.on_scene_mouse_move(event.scenePos())
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self.owner.on_scene_mouse_move(event.scenePos())
 
     def mouseReleaseEvent(self, event) -> None:
         if self.owner.on_tool_mouse_release(event.scenePos()):
             return
         super().mouseReleaseEvent(event)
-        self.owner.on_scene_mouse_release(event.scenePos())
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.owner.on_scene_mouse_release(event.scenePos())
 
     def mouseDoubleClickEvent(self, event) -> None:
         super().mouseDoubleClickEvent(event)
         self.owner.on_scene_mouse_double_click()
 
     def contextMenuEvent(self, event) -> None:
+        self.owner.clear_scene_drag_state()
         self.owner.show_annotation_context_menu(event.scenePos(), event.screenPos())

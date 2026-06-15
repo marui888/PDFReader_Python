@@ -16,6 +16,15 @@ from app.annotation_list import AnnotationListWidget
 from app.annotation_properties import AnnotationPropertiesWidget
 from app.annotation_repository import AnnotationRepository
 from app.annotation_search import AnnotationSearchWidget
+from app.annotation_search_query import AnnotationSearchQuery
+from app.anchors import (
+    add_serial_prefix,
+    is_anchor_text,
+    references_in_text,
+    remove_serial_prefix,
+    scan_document_anchor_data,
+    serial_number,
+)
 from app.document_session import DocumentSession
 from app.annotation_selection import AnnotationSelectionRenderer
 from app.index_worker import ReindexWorker
@@ -25,6 +34,7 @@ from app.models import (
     EDITABLE_APP_TYPES,
     AnnotationModel,
 )
+from app.navigation import NavigationWidget
 from app.pdf_canvas import AnnotationScene, PdfCanvasView
 from app.pdf_audit import audit_current_page as run_audit_current_page
 from app.pdf_audit import audit_document_summary as run_audit_document_summary
@@ -32,6 +42,7 @@ from app.pdf_audit import format_audit_report
 from app.pdf_audit import report_has_errors
 from app.settings import AppSettings, load_settings, save_settings, settings_path
 from app.undo import UndoAction
+from app.view_history import ViewLocation
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt, QThread, Slot
 from PySide6.QtGui import QAction, QBrush, QColor, QImage, QPen, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
@@ -79,6 +90,7 @@ class MainWindow(QMainWindow):
         self.extract_highlight_text_on_reindex = False
         self.search_page_size = 500
         self.recent_files: list[dict] = []
+        self.recent_search_rule_files: list[str] = []
         self.max_recent_files = 10
         self.debug_log: list[str] = []
         self.annotation_index = AnnotationIndex(self.index_path())
@@ -107,6 +119,14 @@ class MainWindow(QMainWindow):
         self.annotation_search_widget: AnnotationSearchWidget | None = None
         self.annotation_search_restore_geometry = None
         self.annotation_search_maximized = False
+        self.navigation_dock: QDockWidget | None = None
+        self.navigation_widget: NavigationWidget | None = None
+        self.navigation_anchor_doc_id: int | None = None
+        self.navigation_anchor_dirty = True
+        self.view_back_stack: list[ViewLocation] = []
+        self.view_forward_stack: list[ViewLocation] = []
+        self.max_view_history = 10
+        self.restoring_view_history = False
         self.reindex_thread: QThread | None = None
         self.reindex_worker: ReindexWorker | None = None
         self.reindex_pdf_path: Path | None = None
@@ -166,6 +186,7 @@ class MainWindow(QMainWindow):
         central_layout.addWidget(self.document_tabs)
         central_layout.addWidget(self.view, 1)
         self.setCentralWidget(central_widget)
+        self.show_navigation()
         self.scroll_boundary_label = QLabel("")
         self.scroll_boundary_label.setVisible(False)
         self.scroll_boundary_label.setStyleSheet(
@@ -220,6 +241,12 @@ class MainWindow(QMainWindow):
         self.next_action = QAction("Next", self)
         self.next_action.triggered.connect(self.next_page)
 
+        self.view_back_action = QAction("Back", self)
+        self.view_back_action.triggered.connect(self.go_back_view)
+
+        self.view_forward_action = QAction("Forward", self)
+        self.view_forward_action.triggered.connect(self.go_forward_view)
+
         self.page_spin = QSpinBox()
         self.page_spin.setMinimum(1)
         self.page_spin.setMaximum(1)
@@ -253,6 +280,9 @@ class MainWindow(QMainWindow):
 
         self.show_annotations_action = QAction("Annotations", self)
         self.show_annotations_action.triggered.connect(self.show_current_page_annotations)
+
+        self.show_navigation_action = QAction("Navigation", self)
+        self.show_navigation_action.triggered.connect(self.show_navigation)
 
         self.audit_current_page_action = QAction("Audit Current Page", self)
         self.audit_current_page_action.triggered.connect(self.audit_current_page)
@@ -303,6 +333,8 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.delete_annotation_action)
 
         tools_menu = self.menuBar().addMenu("Tools")
+        tools_menu.addAction(self.show_navigation_action)
+        tools_menu.addSeparator()
         tools_menu.addAction(self.show_annotations_action)
         tools_menu.addSeparator()
         tools_menu.addAction(self.audit_current_page_action)
@@ -321,6 +353,10 @@ class MainWindow(QMainWindow):
         toolbar = QToolBar("Main")
         toolbar.setMovable(False)
         self.addToolBar(toolbar)
+
+        toolbar.addAction(self.view_back_action)
+        toolbar.addAction(self.view_forward_action)
+        toolbar.addSeparator()
 
         toolbar.addAction(self.prev_action)
         toolbar.addAction(self.next_action)
@@ -372,6 +408,8 @@ class MainWindow(QMainWindow):
         self.clear_annotation_index_action.setEnabled(not is_reindexing)
         self.index_database_info_action.setEnabled(not is_reindexing)
         self.search_annotations_action.setEnabled(not is_reindexing)
+        self.view_back_action.setEnabled(bool(self.view_back_stack) and not is_reindexing)
+        self.view_forward_action.setEnabled(bool(self.view_forward_stack) and not is_reindexing)
 
         if not has_doc or self.doc is None:
             self.close_action.setEnabled(False)
@@ -379,6 +417,8 @@ class MainWindow(QMainWindow):
             self.edit_annotation_action.setEnabled(False)
             self.debug_selected_annotation_pdf_object_action.setEnabled(False)
             self.undo_action_qt.setEnabled(False)
+            self.view_back_action.setEnabled(False)
+            self.view_forward_action.setEnabled(False)
             self.page_spin.setEnabled(False)
             self.page_spin.setMaximum(1)
             self.page_count_label.setText("/ 0")
@@ -473,6 +513,7 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("No PDF open")
         self.refresh_annotations_table()
         self.refresh_properties_panel()
+        self.refresh_navigation()
         self.refresh_annotation_search_status()
         self.sync_page_spin()
         self.update_actions()
@@ -578,6 +619,7 @@ class MainWindow(QMainWindow):
     def on_document_tab_changed(self, index: int) -> None:
         if self.updating_document_tabs:
             return
+        self.record_view_location_before_navigation()
         self.set_active_session(index, preserve_selection=True)
 
     def show_document_tab_context_menu(self, pos) -> None:
@@ -692,6 +734,7 @@ class MainWindow(QMainWindow):
 
     def mark_dirty(self) -> None:
         self.is_dirty = True
+        self.navigation_anchor_dirty = True
         if self.active_session_index is not None and 0 <= self.active_session_index < len(self.sessions):
             self.sessions[self.active_session_index].is_dirty = True
             self.update_document_tab_title(self.active_session_index)
@@ -807,11 +850,91 @@ class MainWindow(QMainWindow):
         if target_index == self.page_index:
             return
 
+        self.record_view_location_before_navigation()
         self.page_index = target_index
         self.cancel_add_tool()
         self.render_page()
         self.update_current_recent_page()
         self.save_active_session_state()
+
+    def current_view_location(self) -> ViewLocation | None:
+        if self.doc is None or self.pdf_path is None:
+            return None
+        selected_xref = None
+        if self.selected_annotation_id is not None:
+            model = self.annotation_model_map.get(self.selected_annotation_id)
+            if model is not None:
+                selected_xref = model.xref
+        return ViewLocation(
+            document_path=str(self.pdf_path),
+            page_index=self.page_index,
+            zoom=self.zoom,
+            scroll_x=self.view.horizontalScrollBar().value(),
+            scroll_y=self.view.verticalScrollBar().value(),
+            selected_xref=selected_xref,
+        )
+
+    def record_view_location_before_navigation(self) -> None:
+        if self.restoring_view_history:
+            return
+        location = self.current_view_location()
+        if location is None:
+            return
+        if self.view_back_stack and self.view_back_stack[-1].is_near(location):
+            return
+        self.view_back_stack.append(location)
+        self.view_back_stack = self.view_back_stack[-self.max_view_history :]
+        self.view_forward_stack.clear()
+        self.update_actions()
+
+    def go_back_view(self) -> None:
+        if not self.view_back_stack:
+            return
+        current = self.current_view_location()
+        location = self.view_back_stack.pop()
+        if current is not None:
+            self.view_forward_stack.append(current)
+            self.view_forward_stack = self.view_forward_stack[-self.max_view_history :]
+        self.restore_view_location(location)
+
+    def go_forward_view(self) -> None:
+        if not self.view_forward_stack:
+            return
+        current = self.current_view_location()
+        location = self.view_forward_stack.pop()
+        if current is not None:
+            self.view_back_stack.append(current)
+            self.view_back_stack = self.view_back_stack[-self.max_view_history :]
+        self.restore_view_location(location)
+
+    def restore_view_location(self, location: ViewLocation) -> None:
+        self.restoring_view_history = True
+        try:
+            target_path = Path(location.document_path)
+            existing_index = self.session_index_for_path(target_path)
+            if existing_index is not None:
+                self.set_active_session(existing_index, preserve_selection=False)
+            else:
+                if not target_path.exists() or not self.open_pdf_path(target_path, location.page_index):
+                    QMessageBox.warning(self, "View History", f"Could not open:\n{target_path}")
+                    return
+            if self.doc is None:
+                return
+            self.zoom = location.zoom
+            self.page_index = max(0, min(location.page_index, len(self.doc) - 1))
+            self.cancel_add_tool()
+            self.render_page(keep_view_position=True)
+            self.view.horizontalScrollBar().setValue(location.scroll_x)
+            self.view.verticalScrollBar().setValue(location.scroll_y)
+            if location.selected_xref is not None:
+                self.select_annotation_by_xref(location.selected_xref)
+                self.view.horizontalScrollBar().setValue(location.scroll_x)
+                self.view.verticalScrollBar().setValue(location.scroll_y)
+            self.update_current_recent_page()
+            self.save_active_session_state()
+        finally:
+            self.restoring_view_history = False
+            self.update_actions()
 
     def current_page(self) -> fitz.Page:
         if self.doc is None:
@@ -824,6 +947,9 @@ class MainWindow(QMainWindow):
     def index_path(self) -> Path:
         return Path(__file__).with_name("PDFReaderIndex.sqlite3")
 
+    def search_rules_dir(self) -> Path:
+        return Path(__file__).with_name("search_rules")
+
     def load_app_settings(self) -> None:
         settings = load_settings(self.settings_path(), self.max_recent_files)
         self.use_foxit_freetext = settings.use_foxit_freetext
@@ -835,6 +961,7 @@ class MainWindow(QMainWindow):
         self.extract_highlight_text_on_reindex = settings.extract_highlight_text_on_reindex
         self.search_page_size = settings.search_page_size
         self.recent_files = settings.recent_files
+        self.recent_search_rule_files = settings.recent_search_rule_files
 
     def save_app_settings(self) -> None:
         settings = AppSettings(
@@ -847,8 +974,13 @@ class MainWindow(QMainWindow):
             extract_highlight_text_on_reindex=self.extract_highlight_text_on_reindex,
             search_page_size=self.search_page_size,
             recent_files=self.recent_files,
+            recent_search_rule_files=self.recent_search_rule_files,
         )
         save_settings(self.settings_path(), settings)
+
+    def update_recent_search_rule_files(self, recent_files: list[str]) -> None:
+        self.recent_search_rule_files = list(recent_files)[: self.max_recent_files]
+        self.save_app_settings()
 
     def clamp_freetext_font_size(self, value: int) -> int:
         return max(self.freetext_font_size_min, min(self.freetext_font_size_max, int(value)))
@@ -961,6 +1093,7 @@ class MainWindow(QMainWindow):
         )
         self.refresh_annotations_table()
         self.sync_page_spin()
+        self.refresh_navigation()
         self.update_actions()
         if hasattr(self.view, "reset_boundary_turn_state"):
             self.view.reset_boundary_turn_state(clear_status=False)
@@ -1120,8 +1253,7 @@ class MainWindow(QMainWindow):
             self.select_annotation(annotation_id)
 
     def on_scene_mouse_press(self, scene_pos: QPointF) -> None:
-        self.active_scene_drag_kind = None
-        self.active_scene_drag_annotation_id = None
+        self.clear_scene_drag_state()
 
         hit = self.annotation_hit_at_scene_pos(scene_pos)
         if hit is None:
@@ -1146,6 +1278,11 @@ class MainWindow(QMainWindow):
             self.active_scene_drag_kind = "arrow-endpoint"
         elif self.is_draggable_model(model):
             self.active_scene_drag_kind = "move"
+
+    def clear_scene_drag_state(self) -> None:
+        self.active_scene_drag_kind = None
+        self.active_scene_drag_annotation_id = None
+        self.active_scene_drag_start_pos = None
 
     def annotation_hit_at_scene_pos(self, scene_pos: QPointF) -> tuple[str, str | None] | None:
         for item in self.scene.items(scene_pos):
@@ -1658,6 +1795,8 @@ class MainWindow(QMainWindow):
         if annotation_id is None:
             self.show_page_status()
             self.update_actions()
+            if self.navigation_widget is not None:
+                self.navigation_widget.set_anchor_insert_enabled(False)
             if not self.applying_property_change:
                 self.refresh_properties_panel()
             return
@@ -1677,6 +1816,8 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"Selected: {model.pdf_type} xref={model.xref} | {hint}")
         self.update_actions()
+        if self.navigation_widget is not None:
+            self.navigation_widget.set_anchor_insert_enabled(self.can_insert_anchor_reference())
         if not self.applying_property_change:
             self.refresh_properties_panel()
 
@@ -1769,6 +1910,7 @@ class MainWindow(QMainWindow):
             self.show_error("Delete annotation failed", exc)
 
     def show_annotation_context_menu(self, scene_pos: QPointF, screen_pos) -> None:
+        self.clear_scene_drag_state()
         hit = self.annotation_hit_at_scene_pos(scene_pos)
         if hit is None:
             return
@@ -1780,8 +1922,30 @@ class MainWindow(QMainWindow):
 
         self.select_annotation(annotation_id)
         menu = QMenu(self)
+        reference_actions = {}
+        if model.app_type == "freetext":
+            references = list(dict.fromkeys(references_in_text(model.text)))
+            if references:
+                references_menu = menu.addMenu("Go to Reference")
+                for reference in references:
+                    reference_actions[references_menu.addAction(reference)] = reference
+            if is_anchor_text(model.text):
+                serial_action = menu.addAction("Remove Serial Number")
+            else:
+                serial_action = menu.addAction("Add Serial Number")
+        else:
+            serial_action = None
         delete_action = menu.addAction("Delete")
         selected_action = menu.exec(screen_pos)
+        if selected_action in reference_actions:
+            self.go_to_anchor_reference_by_name(reference_actions[selected_action])
+            return
+        if selected_action == serial_action:
+            if model.app_type == "freetext" and is_anchor_text(model.text):
+                self.remove_serial_number_from_selected_freetext()
+            else:
+                self.add_serial_number_to_selected_freetext()
+            return
         if selected_action == delete_action:
             self.delete_selected_annotation()
 
@@ -1974,6 +2138,177 @@ class MainWindow(QMainWindow):
         if len(warnings) > max_details:
             self.log_debug(f"  ... {len(warnings) - max_details} more annotation read warnings")
 
+    def show_navigation(self) -> None:
+        if self.navigation_dock is None:
+            self.navigation_dock = QDockWidget("Navigation", self)
+            self.navigation_dock.setAllowedAreas(
+                Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
+            )
+            self.navigation_dock.setFeatures(
+                QDockWidget.DockWidgetFeature.DockWidgetClosable
+                | QDockWidget.DockWidgetFeature.DockWidgetMovable
+                | QDockWidget.DockWidgetFeature.DockWidgetFloatable
+            )
+            self.navigation_widget = NavigationWidget(self)
+            self.navigation_widget.bookmark_activated.connect(self.go_to_bookmark)
+            self.navigation_widget.anchor_activated.connect(self.go_to_anchor)
+            self.navigation_widget.anchor_insert_requested.connect(self.insert_anchor_reference)
+            self.navigation_widget.reference_source_activated.connect(self.go_to_anchor_reference_source)
+            self.navigation_dock.setWidget(self.navigation_widget)
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.navigation_dock)
+            self.resizeDocks([self.navigation_dock], [260], Qt.Orientation.Horizontal)
+
+        self.show_dock(self.navigation_dock)
+        self.refresh_navigation()
+
+    def refresh_navigation(self) -> None:
+        if self.navigation_widget is None:
+            return
+        if self.doc is None:
+            self.navigation_widget.clear_bookmarks()
+            self.navigation_widget.clear_anchors()
+            self.navigation_widget.set_anchor_insert_enabled(False)
+            self.navigation_anchor_doc_id = None
+            self.navigation_anchor_dirty = True
+            return
+        try:
+            self.navigation_widget.set_bookmarks(self.doc.get_toc(simple=True))
+            doc_id = id(self.doc)
+            if self.navigation_anchor_dirty or self.navigation_anchor_doc_id != doc_id:
+                anchor_data = scan_document_anchor_data(self.doc)
+                self.navigation_widget.set_anchors(anchor_data.anchors, anchor_data.references_by_anchor)
+                self.navigation_anchor_doc_id = doc_id
+                self.navigation_anchor_dirty = False
+            self.navigation_widget.set_anchor_insert_enabled(self.can_insert_anchor_reference())
+        except Exception as exc:
+            self.navigation_widget.clear_bookmarks()
+            self.navigation_widget.clear_anchors()
+            self.navigation_anchor_doc_id = None
+            self.navigation_anchor_dirty = True
+            self.log_debug(f"Refresh navigation failed: {exc}")
+
+    def go_to_bookmark(self, page_index: int) -> None:
+        if self.doc is None:
+            return
+        target_index = max(0, min(int(page_index), len(self.doc) - 1))
+        if target_index == self.page_index:
+            return
+        self.record_view_location_before_navigation()
+        self.page_index = target_index
+        self.cancel_add_tool()
+        self.render_page()
+        self.update_current_recent_page()
+        self.save_active_session_state()
+
+    def go_to_anchor_reference_source(self, page_index: int, xref: int) -> None:
+        self.go_to_anchor(page_index, xref)
+
+    def go_to_anchor(self, page_index: int, xref: int) -> None:
+        if self.doc is None:
+            return
+        target_index = max(0, min(int(page_index), len(self.doc) - 1))
+        self.record_view_location_before_navigation()
+        self.page_index = target_index
+        self.cancel_add_tool()
+        self.render_page()
+        self.select_annotation_by_xref(int(xref))
+        self.update_current_recent_page()
+        self.save_active_session_state()
+
+    def can_insert_anchor_reference(self) -> bool:
+        if self.selected_annotation_id is None:
+            return False
+        model = self.annotation_model_map.get(self.selected_annotation_id)
+        return model is not None and model.app_type == "freetext"
+
+    def insert_anchor_reference(self, reference: str) -> None:
+        if not self.can_insert_anchor_reference():
+            QMessageBox.information(self, "Insert Reference", "Select a FreeText annotation first.")
+            return
+        inserted = False
+        if self.properties_page is not None:
+            inserted = self.properties_page.insert_text_into_freetext_editor(reference)
+        if not inserted:
+            self.show_annotation_properties()
+            if self.properties_page is not None:
+                inserted = self.properties_page.insert_text_into_freetext_editor(reference)
+        if not inserted:
+            QMessageBox.information(self, "Insert Reference", "FreeText properties editor is not available.")
+
+    def selected_freetext_model(self) -> AnnotationModel | None:
+        if self.selected_annotation_id is None:
+            return None
+        model = self.annotation_model_map.get(self.selected_annotation_id)
+        if model is None or model.app_type != "freetext":
+            return None
+        return model
+
+    def add_serial_number_to_selected_freetext(self) -> None:
+        model = self.selected_freetext_model()
+        if model is None:
+            QMessageBox.information(self, "Add Serial Number", "Select a FreeText annotation first.")
+            return
+        if is_anchor_text(model.text):
+            return
+
+        number = self.next_serial_number_for_current_page()
+        text = add_serial_prefix(model.text, number)
+        self.update_selected_freetext_text(model, text, "Added serial number")
+
+    def remove_serial_number_from_selected_freetext(self) -> None:
+        model = self.selected_freetext_model()
+        if model is None:
+            QMessageBox.information(self, "Remove Serial Number", "Select a FreeText annotation first.")
+            return
+        if not is_anchor_text(model.text):
+            return
+
+        text = remove_serial_prefix(model.text)
+        if not text.strip():
+            QMessageBox.warning(self, "Remove Serial Number", "FreeText annotation text cannot be empty.")
+            return
+        self.update_selected_freetext_text(model, text, "Removed serial number")
+
+    def next_serial_number_for_current_page(self) -> int:
+        used = {
+            value
+            for value in (serial_number(model.text) for model in self.current_annotations if model.app_type == "freetext")
+            if value is not None
+        }
+        for number in range(1, 21):
+            if number not in used:
+                return number
+        return max(used, default=20) + 1
+
+    def update_selected_freetext_text(self, model: AnnotationModel, text: str, status: str) -> None:
+        try:
+            self.update_freetext_annotation(
+                model,
+                text,
+                int(round(model.font_size or self.default_freetext_font_size)),
+                model.color or (1, 0, 0),
+            )
+            self.mark_dirty()
+            self.render_page(preserve_selection=True, keep_view_position=True)
+            self.statusBar().showMessage(f"{status} xref={model.xref}. Use Save to persist.")
+        except Exception as exc:
+            self.render_page(preserve_selection=True, keep_view_position=True)
+            self.show_error(f"{status} failed", exc)
+
+    def go_to_anchor_reference_by_name(self, reference: str) -> None:
+        if self.doc is None:
+            return
+        try:
+            anchor_data = scan_document_anchor_data(self.doc)
+        except Exception as exc:
+            QMessageBox.warning(self, "Go to Reference", f"Could not scan anchors:\n{exc}")
+            return
+        for anchor in anchor_data.anchors:
+            if anchor.reference == reference:
+                self.go_to_anchor(anchor.page_index, anchor.xref)
+                return
+        QMessageBox.warning(self, "Go to Reference", f"Anchor not found: {reference}")
+
     def show_current_page_annotations(self) -> None:
         if self.annotations_dock is None:
             self.annotations_dock = QDockWidget("Annotations", self)
@@ -2001,6 +2336,9 @@ class MainWindow(QMainWindow):
                 self.on_highlight_default_change,
                 self.on_freetext_property_change,
                 self.on_stroked_property_change,
+                self.go_to_anchor_reference_by_name,
+                self.add_serial_number_to_selected_freetext,
+                self.remove_serial_number_from_selected_freetext,
             )
 
             self.annotations_tabs.addTab(self.annotations_table, "Annotation List")
@@ -2233,6 +2571,11 @@ class MainWindow(QMainWindow):
             )
             self.annotation_search_widget = AnnotationSearchWidget(self)
             self.annotation_search_widget.set_page_size(self.search_page_size)
+            self.annotation_search_widget.set_search_rule_storage(
+                self.search_rules_dir(),
+                self.recent_search_rule_files,
+                self.update_recent_search_rule_files,
+            )
             self.annotation_search_widget.search_requested.connect(self.search_annotations)
             self.annotation_search_widget.result_activated.connect(self.jump_to_search_result)
             self.annotation_search_widget.maximize_requested.connect(self.toggle_search_dock_maximized)
@@ -2252,7 +2595,7 @@ class MainWindow(QMainWindow):
         files = [(document.path, document.file_name) for document in documents]
         self.annotation_search_widget.set_indexed_files(files)
 
-    def search_annotations(self, keyword: str, app_type, document_paths=None) -> None:
+    def search_annotations(self, keyword: str | AnnotationSearchQuery, app_type, document_paths=None) -> None:
         try:
             search_response = self.annotation_index.search_with_timing(
                 keyword,
@@ -2264,15 +2607,16 @@ class MainWindow(QMainWindow):
             if self.annotation_search_widget is not None:
                 ui_ms = self.annotation_search_widget.set_results(results, self.search_page_size)
             total_ms = search_response.sqlite_ms + search_response.build_ms + ui_ms
+            query_summary = keyword.summary() if isinstance(keyword, AnnotationSearchQuery) else f"Keyword: {keyword}"
             self.log_debug(
-                f"Search annotations: keyword={keyword!r} app_type={app_type!r} results={len(results)} "
+                f"Search annotations: {query_summary!r} app_type={app_type!r} results={len(results)} "
                 f"documents={len(document_paths) if document_paths else 'all'} "
                 f"page_size={self.search_page_size} "
                 f"sqlite={search_response.sqlite_ms:.1f}ms "
                 f"build={search_response.build_ms:.1f}ms "
                 f"ui={ui_ms:.1f}ms total={total_ms:.1f}ms"
             )
-            self.statusBar().showMessage(f"Found {len(results)} indexed annotations.")
+            self.statusBar().showMessage(f"Found {len(results)} indexed annotations. {query_summary}")
         except Exception as exc:
             self.log_debug(f"Search annotations failed: {exc}")
             self.show_error("Search Annotations failed", exc)
@@ -2334,6 +2678,7 @@ class MainWindow(QMainWindow):
             self.log_debug(f"Search result jump failed: missing PDF {target_path}")
             return
 
+        self.record_view_location_before_navigation()
         opened_new_tab = False
         existing_index = self.session_index_for_path(target_path)
         if existing_index is not None:
@@ -3482,6 +3827,7 @@ class MainWindow(QMainWindow):
     def prev_page(self) -> None:
         if self.doc is None or self.page_index <= 0:
             return
+        self.record_view_location_before_navigation()
         self.cancel_add_tool()
         self.page_index -= 1
         self.render_page()
@@ -3491,6 +3837,7 @@ class MainWindow(QMainWindow):
     def next_page(self) -> None:
         if self.doc is None or self.page_index >= len(self.doc) - 1:
             return
+        self.record_view_location_before_navigation()
         self.cancel_add_tool()
         self.page_index += 1
         self.render_page()

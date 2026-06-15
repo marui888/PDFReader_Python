@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "name": "advanced-search-rule",
+  "include_mode": "all",
+  "include_text": "//mr:: En",
+  "exclude_text": "翻译"
+}

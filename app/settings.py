@@ -14,6 +14,7 @@ class AppSettings:
     extract_highlight_text_on_reindex: bool = False
     search_page_size: int = 500
     recent_files: list[dict] = field(default_factory=list)
+    recent_search_rule_files: list[str] = field(default_factory=list)
 
 
 def settings_path(base_file: str | Path) -> Path:
@@ -35,6 +36,10 @@ def load_settings(path: Path, max_recent_files: int = 10) -> AppSettings:
         data.get("extract_highlight_text_on_reindex", settings.extract_highlight_text_on_reindex)
     )
     settings.recent_files = normalize_recent_files(data.get("recent_files", []), max_recent_files)
+    settings.recent_search_rule_files = normalize_recent_paths(
+        data.get("recent_search_rule_files", []),
+        max_recent_files,
+    )
 
     color = data.get("default_highlight_color")
     if isinstance(color, list) and len(color) >= 3:
@@ -73,6 +78,7 @@ def save_settings(path: Path, settings: AppSettings) -> None:
         "freetext_font_size_min": settings.freetext_font_size_min,
         "freetext_font_size_max": settings.freetext_font_size_max,
         "recent_files": settings.recent_files,
+        "recent_search_rule_files": settings.recent_search_rule_files,
         "search_page_size": settings.search_page_size,
         "use_foxit_freetext": settings.use_foxit_freetext,
     }
@@ -107,6 +113,29 @@ def normalize_recent_files(value, max_recent_files: int) -> list[dict]:
                 "last_opened_at": str(item.get("last_opened_at", "")),
             }
         )
+        if len(records) >= max_recent_files:
+            break
+    return records
+
+
+def normalize_recent_paths(value, max_recent_files: int) -> list[str]:
+    if not isinstance(value, list):
+        return []
+
+    records: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not item:
+            continue
+        try:
+            path = str(Path(str(item)))
+        except (TypeError, ValueError):
+            continue
+        key = path.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        records.append(path)
         if len(records) >= max_recent_files:
             break
     return records
