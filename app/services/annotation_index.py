@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pymupdf as fitz
 
-from app.annotation_repository import AnnotationRepository
-from app.annotation_search_query import AnnotationSearchQuery
+from app.repositories.annotation_repository import AnnotationRepository
+from app.search.annotation_search_query import AnnotationSearchQuery
 
 
 @dataclass

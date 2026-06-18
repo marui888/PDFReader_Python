@@ -6,10 +6,10 @@ from pathlib import Path
 from PySide6.QtCore import QThread
 from PySide6.QtWidgets import QApplication
 
-from app import main_window_dialogs
-from app import main_window_docks
-from app.annotation_search_query import AnnotationSearchQuery
-from app.index_worker import ReindexWorker
+from app.main_window import dialogs as main_window_dialogs
+from app.main_window import docks as main_window_docks
+from app.search.annotation_search_query import AnnotationSearchQuery
+from app.services.index_worker import ReindexWorker
 
 
 class SearchController:

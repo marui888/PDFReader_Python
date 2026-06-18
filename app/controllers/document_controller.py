@@ -12,12 +12,12 @@ import pymupdf as fitz
 from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QFileDialog, QMenu
 
-from app.annotation_repository import AnnotationRepository
-from app import main_window_dialogs
-from app.document_session import DocumentSession
-from app.pdf_audit import audit_current_page as run_audit_current_page
-from app.pdf_audit import format_audit_report
-from app.pdf_audit import report_has_errors
+from app.repositories.annotation_repository import AnnotationRepository
+from app.main_window import dialogs as main_window_dialogs
+from app.models.document_session import DocumentSession
+from app.services.pdf_audit import audit_current_page as run_audit_current_page
+from app.services.pdf_audit import format_audit_report
+from app.services.pdf_audit import report_has_errors
 
 
 class DocumentController:

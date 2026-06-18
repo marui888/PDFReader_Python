@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app import main_window_dialogs
-from app.view_history import ViewLocation
+from app.main_window import dialogs as main_window_dialogs
+from app.models.view_history import ViewLocation
 
 
 class ViewHistoryController:

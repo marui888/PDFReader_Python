@@ -7,9 +7,9 @@ import pymupdf as fitz
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QGraphicsItem
 
-from app.document_session import DocumentSession
-from app.models import AnnotationModel
-from app.undo import UndoAction
+from app.models.annotation_model import AnnotationModel
+from app.models.document_session import DocumentSession
+from app.models.undo import UndoAction
 
 
 @dataclass

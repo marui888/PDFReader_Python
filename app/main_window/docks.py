@@ -3,10 +3,10 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDockWidget, QPlainTextEdit, QSizePolicy, QTabWidget, QVBoxLayout
 
-from app.annotation_list import AnnotationListWidget
-from app.annotation_properties import AnnotationPropertiesWidget
-from app.annotation_search import AnnotationSearchWidget
-from app.navigation import NavigationWidget
+from app.widgets.annotation_list import AnnotationListWidget
+from app.widgets.annotation_properties import AnnotationPropertiesWidget
+from app.widgets.annotation_search import AnnotationSearchWidget
+from app.widgets.navigation import NavigationWidget
 
 
 def show_current_page_annotations(window) -> None:

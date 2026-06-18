@@ -9,8 +9,8 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPixmap, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem
 
-from app.annotation_items import AnnotationItemRenderer
-from app.models import DRAGGABLE_APP_TYPES, AnnotationModel
+from app.canvas.annotation_items import AnnotationItemRenderer
+from app.models.annotation_model import DRAGGABLE_APP_TYPES, AnnotationModel
 
 
 class CanvasController:

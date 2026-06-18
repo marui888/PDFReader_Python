@@ -14,7 +14,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.anchors import is_anchor_text, references_in_text
-from app.models import ANNOTATION_COLORS, AnnotationModel
+from app.models.annotation_model import ANNOTATION_COLORS, AnnotationModel
 
 
 class AnnotationPropertiesWidget(QWidget):

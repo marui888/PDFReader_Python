@@ -6,7 +6,7 @@ from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPen, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene
 
-from app.models import AnnotationModel
+from app.models.annotation_model import AnnotationModel
 
 
 class AnnotationSelectionRenderer:

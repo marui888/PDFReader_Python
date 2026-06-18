@@ -6,7 +6,7 @@ from datetime import datetime
 
 import pymupdf as fitz
 
-from app.models import AnnotationModel
+from app.models.annotation_model import AnnotationModel
 
 
 class PdfAnnotationWriter:

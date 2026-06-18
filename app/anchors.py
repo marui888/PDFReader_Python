@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 import pymupdf as fitz
 
-from app.annotation_repository import AnnotationRepository
+from app.repositories.annotation_repository import AnnotationRepository
 
 
 SERIAL_PREFIX_PATTERN = re.compile(r"^\s*\[(\d{1,2})\]")

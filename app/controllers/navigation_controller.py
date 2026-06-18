@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from app import main_window_dialogs
-from app import main_window_docks
+from app.main_window import dialogs as main_window_dialogs
+from app.main_window import docks as main_window_docks
 from app.anchors import (
     add_serial_prefix,
     is_anchor_text,

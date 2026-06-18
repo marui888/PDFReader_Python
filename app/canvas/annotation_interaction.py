@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from PySide6.QtCore import QPointF
 from PySide6.QtWidgets import QGraphicsItem
 
-from app.models import DRAGGABLE_APP_TYPES, AnnotationModel
+from app.models.annotation_model import DRAGGABLE_APP_TYPES, AnnotationModel
 
 
 @dataclass

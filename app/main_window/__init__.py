@@ -1,0 +1,1 @@
+"""MainWindow composition helpers."""

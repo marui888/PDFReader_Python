@@ -3,7 +3,7 @@ from collections.abc import Callable
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QTableWidget, QTableWidgetItem
 
-from app.models import AnnotationModel
+from app.models.annotation_model import AnnotationModel
 
 
 class AnnotationListWidget(QTableWidget):

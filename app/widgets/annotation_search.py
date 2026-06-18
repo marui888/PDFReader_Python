@@ -24,8 +24,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from app.annotation_index import AnnotationSearchResult
-from app.annotation_search_query import (
+from app.services.annotation_index import AnnotationSearchResult
+from app.search.annotation_search_query import (
     AnnotationSearchQuery,
     build_search_query,
     load_search_rule,

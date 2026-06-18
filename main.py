@@ -4,33 +4,33 @@ from math import ceil
 from pathlib import Path
 
 import pymupdf as fitz
-from app.annotation_index import AnnotationIndex
-from app.annotation_repository import AnnotationRepository
-from app.annotation_search_query import AnnotationSearchQuery
+from app.services.annotation_index import AnnotationIndex
+from app.repositories.annotation_repository import AnnotationRepository
+from app.search.annotation_search_query import AnnotationSearchQuery
 from app.controllers.annotation_controller import AnnotationController
 from app.controllers.canvas_controller import CanvasController
 from app.controllers.document_controller import DocumentController
 from app.controllers.navigation_controller import NavigationController
 from app.controllers.search_controller import SearchController
 from app.controllers.view_history_controller import ViewHistoryController
-from app.app_state import AppState
-from app.document_session import DocumentSession
-from app.index_worker import ReindexWorker
-from app import main_window_actions
-from app import main_window_dialogs
-from app import main_window_docks
-from app import main_window_view
-from app.models import (
+from app.models.app_state import AppState
+from app.models.document_session import DocumentSession
+from app.services.index_worker import ReindexWorker
+from app.main_window import actions as main_window_actions
+from app.main_window import dialogs as main_window_dialogs
+from app.main_window import docks as main_window_docks
+from app.main_window import view as main_window_view
+from app.models.annotation_model import (
     EDITABLE_APP_TYPES,
     AnnotationModel,
 )
-from app.pdf_canvas import AnnotationScene, PdfCanvasView
-from app.pdf_audit import audit_current_page as run_audit_current_page
-from app.pdf_audit import audit_document_summary as run_audit_document_summary
-from app.pdf_audit import format_audit_report
-from app.pdf_annotation_writer import PdfAnnotationWriter
-from app.settings import AppSettings, load_settings, save_settings, settings_path
-from app.undo import UndoAction
+from app.canvas.pdf_canvas import AnnotationScene, PdfCanvasView
+from app.services.pdf_audit import audit_current_page as run_audit_current_page
+from app.services.pdf_audit import audit_document_summary as run_audit_document_summary
+from app.services.pdf_audit import format_audit_report
+from app.services.pdf_annotation_writer import PdfAnnotationWriter
+from app.services.settings import AppSettings, load_settings, save_settings, settings_path
+from app.models.undo import UndoAction
 from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Slot
 from PySide6.QtWidgets import (
     QApplication,

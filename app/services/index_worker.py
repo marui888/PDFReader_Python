@@ -3,7 +3,7 @@ from pathlib import Path
 import pymupdf as fitz
 from PySide6.QtCore import QObject, Signal, Slot
 
-from app.annotation_index import AnnotationIndex
+from app.services.annotation_index import AnnotationIndex
 
 
 class ReindexWorker(QObject):

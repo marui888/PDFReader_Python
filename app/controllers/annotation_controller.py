@@ -5,13 +5,13 @@ from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPen
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsRectItem, QInputDialog, QMenu
 
-from app import main_window_dialogs
-from app.annotation_interaction import AnnotationInteractionController
-from app.annotation_selection import AnnotationSelectionRenderer
+from app.main_window import dialogs as main_window_dialogs
+from app.canvas.annotation_interaction import AnnotationInteractionController
+from app.canvas.annotation_selection import AnnotationSelectionRenderer
 from app.anchors import is_anchor_text, references_in_text
-from app.models import ANNOTATION_COLORS, AnnotationModel
-from app.pdf_annotation_writer import PdfAnnotationWriter
-from app.undo import UndoAction
+from app.models.annotation_model import ANNOTATION_COLORS, AnnotationModel
+from app.services.pdf_annotation_writer import PdfAnnotationWriter
+from app.models.undo import UndoAction
 
 
 class AnnotationController:

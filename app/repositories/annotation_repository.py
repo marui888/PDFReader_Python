@@ -3,7 +3,7 @@ from dataclasses import dataclass
 
 import pymupdf as fitz
 
-from app.models import SUPPORTED_APP_TYPES, AnnotationModel
+from app.models.annotation_model import SUPPORTED_APP_TYPES, AnnotationModel
 
 
 @dataclass
