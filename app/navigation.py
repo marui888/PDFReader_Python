@@ -92,14 +92,14 @@ class AnchorsWidget(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.anchors: list[AnchorModel] = []
-        self.copy_button = QPushButton("Copy Reference")
-        self.insert_button = QPushButton("Insert Reference")
-        self.references_button = QPushButton("Show References")
+        self.copy_button = QPushButton("Copy Ref")
+        self.insert_button = QPushButton("Insert Ref")
+        self.references_button = QPushButton("Show Refs")
         self.empty_label = QLabel("No anchors")
         self.empty_label.setVisible(False)
         self.references_by_anchor: dict[str, list[AnchorReferenceModel]] = {}
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(("Reference", "Page", "xref", "Refs", "Text"))
+        self.table.setHorizontalHeaderLabels(("Ref", "Page", "xref", "Refs", "Text"))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -243,11 +243,11 @@ class ReferencesDialog(QDialog):
     def __init__(self, reference: str, references: list[AnchorReferenceModel], parent=None) -> None:
         super().__init__(parent)
         self.references = references
-        self.setWindowTitle(f"References to {reference}")
+        self.setWindowTitle(f"Refs to {reference}")
         self.resize(720, 420)
         layout = QVBoxLayout(self)
         self.table = QTableWidget(0, 4)
-        self.table.setHorizontalHeaderLabels(("Page", "xref", "Reference", "Text"))
+        self.table.setHorizontalHeaderLabels(("Page", "xref", "Ref", "Text"))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)

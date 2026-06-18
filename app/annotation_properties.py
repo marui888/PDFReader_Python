@@ -37,7 +37,7 @@ class AnnotationPropertiesWidget(QWidget):
         self.on_serial_add = on_serial_add
         self.on_serial_remove = on_serial_remove
         self.updating = False
-        self.setMinimumWidth(300)
+        self.setMinimumWidth(40)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.layout = QVBoxLayout(self)
         self.show_empty()
@@ -100,7 +100,7 @@ class AnnotationPropertiesWidget(QWidget):
         return form
 
     def constrain_field_width(self, widget: QWidget) -> None:
-        widget.setMinimumWidth(140)
+        widget.setMinimumWidth(40)
         widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
 
     def clear(self) -> None:
@@ -167,7 +167,7 @@ class AnnotationPropertiesWidget(QWidget):
         default_freetext_font_size: int,
     ) -> None:
         text_edit = QPlainTextEdit()
-        text_edit.setMinimumWidth(140)
+        text_edit.setMinimumWidth(40)
         text_edit.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         text_edit.setPlainText(model.text)
         text_edit.setMinimumHeight(120)
@@ -228,7 +228,7 @@ class AnnotationPropertiesWidget(QWidget):
             button.setEnabled(self.on_reference_go is not None)
             button.clicked.connect(lambda _checked=False, value=reference: self.go_to_reference(value))
             layout.addWidget(button)
-        form.addRow("References", container)
+        form.addRow("Refs", container)
 
     def go_to_reference(self, reference: str) -> None:
         if self.on_reference_go is not None:

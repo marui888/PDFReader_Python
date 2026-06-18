@@ -1,54 +1,54 @@
 {
-  "default_freetext_font_size": 7,
+  "default_freetext_font_size": 12,
   "default_highlight_color": [
-    0.0,
-    0.0,
-    1.0
+    1.0,
+    0.85,
+    0.0
   ],
   "default_highlight_opacity": 0.45,
   "extract_highlight_text_on_reindex": true,
-  "freetext_font_size_min": 4,
+  "freetext_font_size_min": 12,
   "freetext_font_size_max": 20,
   "recent_files": [
     {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\\u5e8f\u53f7\u5b57\u7b26\u529f\u80fd\u6d4b\u8bd51.pdf",
-      "last_page_index": 37,
-      "last_opened_at": "2026-06-16T07:01:24+08:00"
+      "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\\u5fae\u4fe1\u5c0f\u7a0b\u5e8f\u5f00\u53d1\u5b9e\u6218 \u7b2c2\u7248 (\u9ed1\u9a6c\u7a0b\u5e8f\u5458) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+      "last_page_index": 0,
+      "last_opened_at": "2026-06-18T14:06:44+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
-      "last_page_index": 421,
-      "last_opened_at": "2026-06-16T06:41:57+08:00"
+      "last_page_index": 33,
+      "last_opened_at": "2026-06-18T13:57:29+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\\u5e8f\u53f7\u5b57\u7b26\u529f\u80fd\u6d4b\u8bd51.pdf",
+      "last_page_index": 0,
+      "last_opened_at": "2026-06-18T13:57:25+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\Leading Effective Engineering Teams Lessons for Individual Contributors and Managers from 10 Years at Google (Addy Osmani) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+      "last_page_index": 21,
+      "last_opened_at": "2026-06-18T13:42:54+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
-      "last_page_index": 337,
-      "last_opened_at": "2026-06-16T02:41:02+08:00"
+      "last_page_index": 265,
+      "last_opened_at": "2026-06-18T13:22:45+08:00"
+    },
+    {
+      "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\Communist Manifesto (Karl Marx, Friedrich Engels, David McLellan) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+      "last_page_index": 20,
+      "last_opened_at": "2026-06-18T05:27:54+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\Communist Manifesto (Karl Marx, Friedrich Engels, David McLellan) (z-library.sk, 1lib.sk, z-lib.sk)_annotated.pdf",
       "last_page_index": 0,
       "last_opened_at": "2026-06-15T20:30:11+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\\u5fae\u4fe1\u5c0f\u7a0b\u5e8f\u5f00\u53d1\u5b9e\u6218 \u7b2c2\u7248 (\u9ed1\u9a6c\u7a0b\u5e8f\u5458) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
-      "last_page_index": 12,
-      "last_opened_at": "2026-06-15T19:28:35+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\Leading Effective Engineering Teams Lessons for Individual Contributors and Managers from 10 Years at Google (Addy Osmani) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
-      "last_page_index": 25,
-      "last_opened_at": "2026-06-15T05:40:47+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\low-size\\Communist Manifesto (Karl Marx, Friedrich Engels, David McLellan) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
-      "last_page_index": 46,
-      "last_opened_at": "2026-06-15T05:40:41+08:00"
     }
   ],
   "recent_search_rule_files": [
     "D:\\prj_PDFReader\\search_rules\\advanced-search-rule.json"
   ],
-  "search_page_size": 500,
+  "search_page_size": 400,
   "use_foxit_freetext": false
 }
