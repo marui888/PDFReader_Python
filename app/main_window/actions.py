@@ -92,6 +92,15 @@ def create_actions(window) -> None:
     window.audit_document_summary_action = QAction("Audit Document Summary", window)
     window.audit_document_summary_action.triggered.connect(window.audit_document_summary)
 
+    window.backup_current_pdf_action = QAction("Backup Current PDF", window)
+    window.backup_current_pdf_action.triggered.connect(window.backup_current_pdf)
+
+    window.qpdf_check_current_pdf_action = QAction("QPDF Check Current PDF", window)
+    window.qpdf_check_current_pdf_action.triggered.connect(window.qpdf_check_current_pdf)
+
+    window.qpdf_rewrite_current_pdf_action = QAction("QPDF Rewrite Current PDF", window)
+    window.qpdf_rewrite_current_pdf_action.triggered.connect(window.qpdf_rewrite_current_pdf)
+
     window.reindex_current_pdf_action = QAction("Reindex Current PDF", window)
     window.reindex_current_pdf_action.triggered.connect(window.reindex_current_pdf)
 
@@ -142,6 +151,10 @@ def create_menus(window) -> None:
     tools_menu.addSeparator()
     tools_menu.addAction(window.audit_current_page_action)
     tools_menu.addAction(window.audit_document_summary_action)
+    tools_menu.addSeparator()
+    tools_menu.addAction(window.backup_current_pdf_action)
+    tools_menu.addAction(window.qpdf_check_current_pdf_action)
+    tools_menu.addAction(window.qpdf_rewrite_current_pdf_action)
     tools_menu.addSeparator()
     tools_menu.addAction(window.reindex_current_pdf_action)
     tools_menu.addAction(window.clear_annotation_index_action)
@@ -200,6 +213,9 @@ def update_actions(window) -> None:
         window.show_annotations_action,
         window.audit_current_page_action,
         window.audit_document_summary_action,
+        window.backup_current_pdf_action,
+        window.qpdf_check_current_pdf_action,
+        window.qpdf_rewrite_current_pdf_action,
         window.debug_current_page_state_action,
         window.reindex_current_pdf_action,
     ):

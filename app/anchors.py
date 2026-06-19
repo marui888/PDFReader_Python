@@ -8,8 +8,11 @@ import pymupdf as fitz
 from app.repositories.annotation_repository import AnnotationRepository
 
 
-SERIAL_PREFIX_PATTERN = re.compile(r"^\s*\[(\d{1,2})\]")
-REFERENCE_PATTERN = re.compile(r"Pg(\d+)-\[(\d{1,2})\]")
+SERIAL_SYMBOLS = tuple(chr(code) for code in range(0x2460, 0x2474))
+SERIAL_BY_NUMBER = {number: symbol for number, symbol in enumerate(SERIAL_SYMBOLS, start=1)}
+SERIAL_NUMBER_BY_SYMBOL = {symbol: number for number, symbol in SERIAL_BY_NUMBER.items()}
+SERIAL_PREFIX_PATTERN = re.compile(r"^\s*([" + re.escape("".join(SERIAL_SYMBOLS)) + r"])")
+REFERENCE_PATTERN = re.compile(r"Pg(\d+)-([" + re.escape("".join(SERIAL_SYMBOLS)) + r"])")
 
 
 @dataclass
@@ -47,15 +50,14 @@ def is_anchor_text(text: str) -> bool:
 
 def anchor_symbol(text: str) -> str:
     number = serial_number(text)
-    return f"[{number}]" if number is not None else ""
+    return SERIAL_BY_NUMBER.get(number, "") if number is not None else ""
 
 
 def serial_number(text: str) -> int | None:
     match = SERIAL_PREFIX_PATTERN.match(text)
     if not match:
         return None
-    value = int(match.group(1))
-    return value if 1 <= value <= 99 else None
+    return SERIAL_NUMBER_BY_SYMBOL.get(match.group(1))
 
 
 def remove_serial_prefix(text: str) -> str:
@@ -63,7 +65,10 @@ def remove_serial_prefix(text: str) -> str:
 
 
 def add_serial_prefix(text: str, number: int) -> str:
-    return f"[{number}] {remove_serial_prefix(text)}"
+    symbol = SERIAL_BY_NUMBER.get(number)
+    if symbol is None:
+        raise ValueError(f"Serial number is out of supported range: {number}")
+    return f"{symbol} {remove_serial_prefix(text)}"
 
 
 def anchor_reference(page_number: int, symbol: str) -> str:
@@ -97,7 +102,7 @@ def scan_document_anchor_data(doc: fitz.Document) -> AnchorScanResult:
                 number = serial_number(model.text)
                 if number is None:
                     continue
-                symbol = f"[{number}]"
+                symbol = SERIAL_BY_NUMBER.get(number, "")
                 anchors.append(
                     AnchorModel(
                         reference=anchor_reference(page_number, symbol),

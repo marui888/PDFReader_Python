@@ -5,6 +5,7 @@ from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
     QFormLayout,
+    QLineEdit,
     QMessageBox,
     QSpinBox,
     QVBoxLayout,
@@ -131,6 +132,10 @@ def open_settings(window) -> None:
     extract_highlight_text_checkbox.setChecked(window.extract_highlight_text_on_reindex)
     layout.addWidget(extract_highlight_text_checkbox)
 
+    quick_audit_detailed_checkbox = QCheckBox("Quick Audit detailed bounds check")
+    quick_audit_detailed_checkbox.setChecked(window.quick_audit_detailed)
+    layout.addWidget(quick_audit_detailed_checkbox)
+
     form = QFormLayout()
     font_min_spin = QSpinBox()
     font_min_spin.setRange(1, 72)
@@ -151,6 +156,10 @@ def open_settings(window) -> None:
     search_page_size_spin.setRange(1, 10000)
     search_page_size_spin.setValue(window.search_page_size)
     form.addRow("Search page size", search_page_size_spin)
+
+    qpdf_bin_dir_edit = QLineEdit()
+    qpdf_bin_dir_edit.setText(window.qpdf_bin_dir)
+    form.addRow("QPDF bin directory", qpdf_bin_dir_edit)
     layout.addLayout(form)
 
     buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
@@ -165,10 +174,12 @@ def open_settings(window) -> None:
 
     window.set_foxit_freetext(foxit_checkbox.isChecked())
     window.extract_highlight_text_on_reindex = extract_highlight_text_checkbox.isChecked()
+    window.quick_audit_detailed = quick_audit_detailed_checkbox.isChecked()
     window.freetext_font_size_min = max(1, font_min_spin.value())
     window.freetext_font_size_max = max(window.freetext_font_size_min, font_max_spin.value())
     window.default_freetext_font_size = window.clamp_freetext_font_size(font_size_spin.value())
     window.search_page_size = max(1, search_page_size_spin.value())
+    window.qpdf_bin_dir = qpdf_bin_dir_edit.text().strip()
     if window.annotation_search_widget is not None:
         window.annotation_search_widget.set_page_size(window.search_page_size)
     try:

@@ -22,6 +22,176 @@ class PdfAuditReport:
     issues: list[PdfAuditIssue] = field(default_factory=list)
 
 
+@dataclass
+class QuickAuditReport:
+    page_number: int | None
+    detailed: bool = False
+    page_rect: str = ""
+    cropbox: str = ""
+    annotation_count: int = 0
+    supported_count: int = 0
+    unsupported_count: int = 0
+    warnings: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+def quick_audit_current_page_annotations(
+    doc: fitz.Document | None,
+    page_index: int,
+    detailed: bool = False,
+) -> QuickAuditReport:
+    if doc is None:
+        return QuickAuditReport(None, detailed=detailed, errors=["No PDF open."])
+
+    page_count = safe_page_count(doc)
+    if page_count <= 0:
+        return QuickAuditReport(None, detailed=detailed, errors=["Document has no readable pages."])
+    if page_index < 0 or page_index >= page_count:
+        return QuickAuditReport(None, detailed=detailed, errors=[f"Page index out of range: {page_index}."])
+
+    page_number = page_index + 1
+    report = QuickAuditReport(page_number, detailed=detailed)
+    try:
+        page = doc[page_index]
+    except Exception as exc:
+        report.errors.append(f"Page cannot be loaded: {exc}")
+        return report
+
+    try:
+        page_rect = fitz.Rect(page.rect)
+    except Exception as exc:
+        report.errors.append(f"Page rect cannot be read: {exc}")
+        return report
+
+    try:
+        cropbox = fitz.Rect(page.cropbox)
+    except Exception:
+        cropbox = page_rect
+    report.page_rect = compact_rect(page_rect)
+    report.cropbox = compact_rect(cropbox)
+
+    try:
+        annot = page.first_annot
+        while annot is not None:
+            report.annotation_count += 1
+            quick_audit_annotation(annot, page_rect, cropbox, report, detailed)
+            annot = annot.next
+    except Exception as exc:
+        report.errors.append(f"Annotation traversal failed: {exc}")
+
+    return report
+
+
+def quick_audit_annotation(
+    annot: fitz.Annot,
+    page_rect: fitz.Rect,
+    cropbox: fitz.Rect,
+    report: QuickAuditReport,
+    detailed: bool,
+) -> None:
+    try:
+        xref = annot.xref
+    except Exception:
+        xref = None
+
+    try:
+        pdf_type = annot.type[1] if annot.type and len(annot.type) > 1 else str(annot.type[0])
+    except Exception:
+        pdf_type = "Unknown"
+
+    if pdf_type in {"Highlight", "FreeText", "Square", "Line"}:
+        report.supported_count += 1
+    else:
+        report.unsupported_count += 1
+
+    try:
+        rect = fitz.Rect(annot.rect)
+    except Exception as exc:
+        report.errors.append(f"{label(xref, pdf_type)} rect cannot be read: {exc}")
+        return
+
+    if rect.is_empty or rect.width <= 0 or rect.height <= 0:
+        report.warnings.append(f"{label(xref, pdf_type)} has invalid rect: {compact_rect(rect)}")
+        return
+
+    if rect_outside_rect(rect, page_rect):
+        report.warnings.append(
+            f"{label(xref, pdf_type)} rect outside page: rect={compact_rect(rect)} page={compact_rect(page_rect)}"
+        )
+    elif detailed and cropbox and not rect_inside_rect(rect, cropbox):
+        report.warnings.append(
+            f"{label(xref, pdf_type)} rect outside cropbox: rect={compact_rect(rect)} cropbox={compact_rect(cropbox)}"
+        )
+
+    if pdf_type == "Highlight":
+        quick_audit_vertices(annot, page_rect, report, xref, pdf_type, expected_multiple=4, detailed=detailed)
+    elif pdf_type == "Line":
+        quick_audit_vertices(annot, page_rect, report, xref, pdf_type, expected_minimum=2, detailed=detailed)
+
+
+def quick_audit_vertices(
+    annot: fitz.Annot,
+    page_rect: fitz.Rect,
+    report: QuickAuditReport,
+    xref: int | None,
+    pdf_type: str,
+    expected_multiple: int | None = None,
+    expected_minimum: int | None = None,
+    detailed: bool = False,
+) -> None:
+    try:
+        vertices = getattr(annot, "vertices", None)
+    except Exception as exc:
+        report.warnings.append(f"{label(xref, pdf_type)} vertices cannot be read: {exc}")
+        return
+    if not vertices:
+        report.warnings.append(f"{label(xref, pdf_type)} has no vertices.")
+        return
+    if expected_minimum is not None and len(vertices) < expected_minimum:
+        report.warnings.append(f"{label(xref, pdf_type)} has fewer than {expected_minimum} vertices.")
+    if expected_multiple is not None and len(vertices) % expected_multiple != 0:
+        report.warnings.append(f"{label(xref, pdf_type)} vertex count is not a multiple of {expected_multiple}: {len(vertices)}.")
+
+    for point in vertices:
+        if not point_in_rect(point, page_rect):
+            report.warnings.append(f"{label(xref, pdf_type)} vertex outside page: point={compact_point(point)}")
+            return
+    if detailed:
+        report.warnings.extend(
+            f"{label(xref, pdf_type)} vertex {index + 1}: {compact_point(point)}"
+            for index, point in enumerate(vertices)
+            if not point_in_rect(point, page_rect, tolerance=0.0)
+        )
+
+
+def format_quick_audit_report(report: QuickAuditReport) -> str:
+    title_page = f"Page {report.page_number}" if report.page_number is not None else "No page"
+    lines = [
+        f"Quick Audit - {title_page}",
+        f"Mode: {'Detailed' if report.detailed else 'Standard'}",
+        f"Annotations: {report.annotation_count}",
+        f"Supported: {report.supported_count}",
+        f"Unsupported: {report.unsupported_count}",
+    ]
+    if report.detailed:
+        lines.append(f"Page rect: {report.page_rect or 'unknown'}")
+        lines.append(f"CropBox: {report.cropbox or 'unknown'}")
+    if report.errors:
+        lines.append("")
+        lines.append("Errors:")
+        lines.extend(f"- {message}" for message in report.errors)
+    if report.warnings:
+        lines.append("")
+        lines.append("Warnings:")
+        lines.extend(f"- {message}" for message in report.warnings[:20])
+        if len(report.warnings) > 20:
+            lines.append(f"- ... {len(report.warnings) - 20} more warnings")
+    if not report.errors and not report.warnings:
+        lines.append("")
+        lines.append("No bounds warnings.")
+    return "\n".join(lines)
+
+
 def audit_current_page(doc: fitz.Document, page_index: int) -> PdfAuditReport:
     report = PdfAuditReport("PDF Current Page Audit", safe_page_count(doc))
     if report.page_count <= 0:
@@ -159,6 +329,35 @@ def rect_outside_page(rect: fitz.Rect, page_rect: fitz.Rect) -> bool:
         page_rect.y1 + margin,
     )
     return not expanded.intersects(rect)
+
+
+def rect_inside_rect(rect: fitz.Rect, outer: fitz.Rect, tolerance: float = 0.5) -> bool:
+    return (
+        rect.x0 >= outer.x0 - tolerance
+        and rect.y0 >= outer.y0 - tolerance
+        and rect.x1 <= outer.x1 + tolerance
+        and rect.y1 <= outer.y1 + tolerance
+    )
+
+
+def rect_outside_rect(rect: fitz.Rect, outer: fitz.Rect, tolerance: float = 0.5) -> bool:
+    return not rect_inside_rect(rect, outer, tolerance)
+
+
+def point_in_rect(point, rect: fitz.Rect, tolerance: float = 0.5) -> bool:
+    x = point.x if hasattr(point, "x") else point[0]
+    y = point.y if hasattr(point, "y") else point[1]
+    return rect.x0 - tolerance <= x <= rect.x1 + tolerance and rect.y0 - tolerance <= y <= rect.y1 + tolerance
+
+
+def compact_rect(rect: fitz.Rect) -> str:
+    return f"({rect.x0:.1f}, {rect.y0:.1f}, {rect.x1:.1f}, {rect.y1:.1f})"
+
+
+def compact_point(point) -> str:
+    x = point.x if hasattr(point, "x") else point[0]
+    y = point.y if hasattr(point, "y") else point[1]
+    return f"({x:.1f}, {y:.1f})"
 
 
 def label(xref: int | None, pdf_type: str) -> str:

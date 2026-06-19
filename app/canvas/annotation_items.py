@@ -74,11 +74,10 @@ class AnnotationItemRenderer:
         self.add_rect_hit_item(rect, model)
 
     def freetext_render_width(self, model: AnnotationModel, rect: QRectF, font_size: float) -> float:
-        text = model.text or ""
-        longest_line_length = max((len(line) for line in text.splitlines()), default=0)
-        estimated_width = longest_line_length * font_size * self.zoom * 1.2
-        min_width = min(max(estimated_width, 40.0 * self.zoom), 260.0 * self.zoom)
-        return max(rect.width(), min_width)
+        minimum_width = max(24.0 * self.zoom, font_size * self.zoom * 2.5)
+        if rect.width() >= minimum_width:
+            return rect.width()
+        return minimum_width
 
     def add_square_item(self, model: AnnotationModel) -> None:
         rect = self.scene_rect(model.rect)

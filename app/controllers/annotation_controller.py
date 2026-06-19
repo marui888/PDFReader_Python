@@ -737,8 +737,41 @@ class AnnotationController:
         window = self.window
         if window.doc is None:
             raise RuntimeError("No PDF is open.")
+        self.update_freetext_annotation_on_page(window.page_index, model, text, font_size, color)
+
+    def update_freetext_annotation_on_page(
+        self,
+        page_index: int,
+        model: AnnotationModel,
+        text: str,
+        font_size: int,
+        color: tuple[float, float, float] = (1, 0, 0),
+    ) -> None:
+        window = self.window
+        if window.doc is None:
+            raise RuntimeError("No PDF is open.")
         PdfAnnotationWriter(window.doc).update_freetext_annotation(
-            window.current_page(),
+            window.doc[page_index],
+            model,
+            text,
+            font_size,
+            color,
+            window.estimated_freetext_size,
+        )
+
+    def update_freetext_annotation_clean_appearance_on_page(
+        self,
+        page_index: int,
+        model: AnnotationModel,
+        text: str,
+        font_size: int,
+        color: tuple[float, float, float] = (1, 0, 0),
+    ) -> None:
+        window = self.window
+        if window.doc is None:
+            raise RuntimeError("No PDF is open.")
+        PdfAnnotationWriter(window.doc).update_freetext_annotation_clean_appearance(
+            window.doc[page_index],
             model,
             text,
             font_size,

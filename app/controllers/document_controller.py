@@ -18,6 +18,9 @@ from app.models.document_session import DocumentSession
 from app.services.pdf_audit import audit_current_page as run_audit_current_page
 from app.services.pdf_audit import format_audit_report
 from app.services.pdf_audit import report_has_errors
+from app.services.pdf_external_tools import backup_pdf_file
+from app.services.pdf_external_tools import run_qpdf_check
+from app.services.pdf_external_tools import rewrite_pdf_with_qpdf
 
 
 class DocumentController:
@@ -251,6 +254,11 @@ class DocumentController:
             return
 
         menu = QMenu(window)
+        save_incremental_action = menu.addAction("Save Incremental")
+        backup_action = menu.addAction("Backup Current PDF")
+        qpdf_check_action = menu.addAction("QPDF Check Current PDF")
+        qpdf_rewrite_action = menu.addAction("QPDF Rewrite Current PDF")
+        menu.addSeparator()
         close_action = menu.addAction("Close")
         close_others_action = menu.addAction("Close Others")
         close_all_action = menu.addAction("Close All")
@@ -258,12 +266,103 @@ class DocumentController:
         close_all_action.setEnabled(bool(window.sessions))
 
         selected_action = menu.exec(window.document_tabs.mapToGlobal(pos))
-        if selected_action == close_action:
+        if selected_action == save_incremental_action:
+            self.set_active_session(index, preserve_selection=True)
+            window.save_incremental()
+        elif selected_action == backup_action:
+            self.set_active_session(index, preserve_selection=True)
+            self.backup_current_pdf()
+        elif selected_action == qpdf_check_action:
+            self.set_active_session(index, preserve_selection=True)
+            self.qpdf_check_current_pdf()
+        elif selected_action == qpdf_rewrite_action:
+            self.set_active_session(index, preserve_selection=True)
+            self.qpdf_rewrite_current_pdf()
+        elif selected_action == close_action:
             self.close_document_tab(index)
         elif selected_action == close_others_action:
             self.close_other_document_tabs(index)
         elif selected_action == close_all_action:
             self.close_all_document_tabs()
+
+    def current_clean_pdf_path_for_external_operation(self, operation_name: str) -> Path | None:
+        window = self.window
+        if window.doc is None or window.pdf_path is None:
+            main_window_dialogs.show_warning(window, operation_name, "No PDF is open.")
+            return None
+
+        self.save_active_session_state()
+        if window.is_dirty:
+            main_window_dialogs.show_warning(
+                window,
+                operation_name,
+                "This PDF has unsaved changes.\n\n"
+                "Save or Save Incremental before running this operation.",
+            )
+            return None
+
+        if not window.pdf_path.exists():
+            main_window_dialogs.show_warning(
+                window,
+                operation_name,
+                f"PDF file not found:\n{window.pdf_path}",
+            )
+            return None
+
+        return window.pdf_path
+
+    def backup_current_pdf(self) -> None:
+        window = self.window
+        pdf_path = self.current_clean_pdf_path_for_external_operation("Backup Current PDF")
+        if pdf_path is None:
+            return
+
+        try:
+            window.log_debug(f"Backup current PDF started: {pdf_path}")
+            backup_path = backup_pdf_file(pdf_path)
+            window.log_debug(f"Backup current PDF completed: {backup_path}")
+            main_window_dialogs.show_information(window, "Backup Current PDF", f"Backup created:\n{backup_path}")
+        except Exception as exc:
+            window.log_debug(f"Backup current PDF failed: {exc}")
+            window.show_error("Backup Current PDF failed", exc)
+
+    def qpdf_check_current_pdf(self) -> None:
+        window = self.window
+        pdf_path = self.current_clean_pdf_path_for_external_operation("QPDF Check Current PDF")
+        if pdf_path is None:
+            return
+
+        try:
+            window.log_debug(f"QPDF check started: {pdf_path}")
+            report_path = run_qpdf_check(pdf_path, window.qpdf_bin_dir)
+            window.log_debug(f"QPDF check completed: {report_path}")
+            main_window_dialogs.show_information(
+                window,
+                "QPDF Check Current PDF",
+                f"QPDF report created:\n{report_path}",
+            )
+        except Exception as exc:
+            window.log_debug(f"QPDF check failed: {exc}")
+            window.show_error("QPDF Check Current PDF failed", exc)
+
+    def qpdf_rewrite_current_pdf(self) -> None:
+        window = self.window
+        pdf_path = self.current_clean_pdf_path_for_external_operation("QPDF Rewrite Current PDF")
+        if pdf_path is None:
+            return
+
+        try:
+            window.log_debug(f"QPDF rewrite started: {pdf_path}")
+            rewritten_path = rewrite_pdf_with_qpdf(pdf_path, window.qpdf_bin_dir)
+            window.log_debug(f"QPDF rewrite completed: {rewritten_path}")
+            main_window_dialogs.show_information(
+                window,
+                "QPDF Rewrite Current PDF",
+                f"Rewritten PDF created:\n{rewritten_path}",
+            )
+        except Exception as exc:
+            window.log_debug(f"QPDF rewrite failed: {exc}")
+            window.show_error("QPDF Rewrite Current PDF failed", exc)
 
     def close_document_tab(self, index: int) -> bool:
         window = self.window

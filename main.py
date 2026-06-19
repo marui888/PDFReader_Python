@@ -21,10 +21,16 @@ from app.main_window import dialogs as main_window_dialogs
 from app.main_window import docks as main_window_docks
 from app.main_window import view as main_window_view
 from app.models.annotation_model import (
+    ANNOTATION_COLORS,
     EDITABLE_APP_TYPES,
     AnnotationModel,
 )
 from app.canvas.pdf_canvas import AnnotationScene, PdfCanvasView
+from app.services.freetext_batch import FreeTextMatch
+from app.services.freetext_batch import add_text_to_match
+from app.services.freetext_batch import delete_match_text
+from app.services.freetext_batch import find_freetext_matches
+from app.services.freetext_batch import replace_match_text
 from app.services.pdf_audit import audit_current_page as run_audit_current_page
 from app.services.pdf_audit import audit_document_summary as run_audit_document_summary
 from app.services.pdf_audit import format_audit_report
@@ -32,6 +38,7 @@ from app.services.pdf_annotation_writer import PdfAnnotationWriter
 from app.services.settings import AppSettings, load_settings, save_settings, settings_path
 from app.models.undo import UndoAction
 from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Slot
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QDockWidget,
@@ -62,6 +69,8 @@ class MainWindow(QMainWindow):
         self.default_highlight_color = (1, 1, 0)
         self.default_highlight_opacity = 0.45
         self.extract_highlight_text_on_reindex = False
+        self.quick_audit_detailed = False
+        self.qpdf_bin_dir = r"D:\tools\qpdf-12.3.2-msvc64\bin"
         self.search_page_size = 500
         self.recent_files: list[dict] = []
         self.recent_search_rule_files: list[str] = []
@@ -108,7 +117,9 @@ class MainWindow(QMainWindow):
         self.reindex_pdf_path: Path | None = None
         self.open_recent_menu = None
         self.annotations_table: object | None = None
+        self.quick_audit_text: QPlainTextEdit | None = None
         self.properties_page: object | None = None
+        self.batch_freetext_widget: object | None = None
         self.updating_page_spin = False
         self.updating_table_selection = False
         self.updating_scene_selection = False
@@ -484,6 +495,15 @@ class MainWindow(QMainWindow):
     def show_document_tab_context_menu(self, pos) -> None:
         self.document_controller.show_document_tab_context_menu(pos)
 
+    def backup_current_pdf(self) -> None:
+        self.document_controller.backup_current_pdf()
+
+    def qpdf_check_current_pdf(self) -> None:
+        self.document_controller.qpdf_check_current_pdf()
+
+    def qpdf_rewrite_current_pdf(self) -> None:
+        self.document_controller.qpdf_rewrite_current_pdf()
+
     def sync_page_spin(self) -> None:
         main_window_view.sync_page_spin(self)
 
@@ -566,6 +586,8 @@ class MainWindow(QMainWindow):
         self.default_highlight_color = settings.default_highlight_color
         self.default_highlight_opacity = settings.default_highlight_opacity
         self.extract_highlight_text_on_reindex = settings.extract_highlight_text_on_reindex
+        self.quick_audit_detailed = settings.quick_audit_detailed
+        self.qpdf_bin_dir = settings.qpdf_bin_dir
         self.search_page_size = settings.search_page_size
         self.recent_files = settings.recent_files
         self.recent_search_rule_files = settings.recent_search_rule_files
@@ -579,6 +601,8 @@ class MainWindow(QMainWindow):
             default_highlight_color=self.default_highlight_color,
             default_highlight_opacity=self.default_highlight_opacity,
             extract_highlight_text_on_reindex=self.extract_highlight_text_on_reindex,
+            quick_audit_detailed=self.quick_audit_detailed,
+            qpdf_bin_dir=self.qpdf_bin_dir,
             search_page_size=self.search_page_size,
             recent_files=self.recent_files,
             recent_search_rule_files=self.recent_search_rule_files,
@@ -1194,6 +1218,264 @@ class MainWindow(QMainWindow):
     def refresh_annotations_table(self) -> None:
         main_window_docks.refresh_annotations_table(self)
 
+    def find_batch_freetext(self, keyword: str, scope: str) -> None:
+        if self.doc is None:
+            if self.batch_freetext_widget is not None:
+                self.batch_freetext_widget.set_message("No PDF open.")
+            return
+        if not keyword.strip():
+            if self.batch_freetext_widget is not None:
+                self.batch_freetext_widget.set_message("Enter text to find FreeText annotations.")
+            return
+
+        matches, warnings = find_freetext_matches(
+            self.doc,
+            keyword,
+            current_page_index=self.page_index,
+            scope=scope,
+        )
+        if self.batch_freetext_widget is not None:
+            self.batch_freetext_widget.set_results(matches, warnings)
+        scope_text = "current document" if scope == "current_document" else "current page"
+        self.log_debug(
+            f"Batch FreeText find: scope={scope_text} keyword={keyword!r} "
+            f"results={len(matches)} warnings={len(warnings)}"
+        )
+
+    def jump_to_batch_freetext_result(self, page_index: int, xref: int) -> None:
+        if self.doc is None:
+            return
+        self.record_view_location_before_navigation()
+        self.cancel_add_tool()
+        self.page_index = max(0, min(page_index, len(self.doc) - 1))
+        self.render_page()
+        self.update_current_recent_page()
+        selected = self.select_annotation_by_xref(xref)
+        if selected:
+            self.statusBar().showMessage(f"Jumped to FreeText result on page {self.page_index + 1}.")
+            self.log_debug(f"Batch FreeText jumped: page={self.page_index + 1} xref={xref}")
+        else:
+            main_window_dialogs.show_warning(
+                self,
+                "Batch FreeText",
+                f"FreeText annotation was not found on page {self.page_index + 1}.\n\nxref={xref}",
+            )
+            self.log_debug(f"Batch FreeText jump failed: page={self.page_index + 1} xref={xref}")
+
+    def replace_selected_batch_freetext(self, replacement: str) -> None:
+        result = self.selected_batch_freetext_result()
+        if result is None:
+            return
+        keyword = self.batch_freetext_keyword()
+        changed = self.apply_batch_freetext_text_change(
+            [result],
+            lambda text: replace_match_text(text, keyword, replacement),
+            "Replace Selected FreeText",
+        )
+        self.finish_batch_freetext_text_change(changed, "Replaced selected FreeText match text.")
+
+    def replace_all_batch_freetext(self, replacement: str) -> None:
+        if self.batch_freetext_widget is None:
+            return
+        results = list(self.batch_freetext_widget.results)
+        if not results:
+            main_window_dialogs.show_warning(self, "Batch FreeText", "No FreeText search results to replace.")
+            return
+        if not main_window_dialogs.ask_yes_no(
+            self,
+            "Replace All Results",
+            f"Replace matching text in {len(results)} FreeText annotation(s)?",
+        ):
+            return
+        keyword = self.batch_freetext_keyword()
+        changed = self.apply_batch_freetext_text_change(
+            results,
+            lambda text: replace_match_text(text, keyword, replacement),
+            "Replace All FreeText",
+        )
+        self.finish_batch_freetext_text_change(changed, f"Replaced match text in {changed} FreeText annotation(s).")
+
+    def delete_selected_batch_freetext_match(self) -> None:
+        result = self.selected_batch_freetext_result()
+        if result is None:
+            return
+        keyword = self.batch_freetext_keyword()
+        changed = self.apply_batch_freetext_text_change(
+            [result],
+            lambda text: delete_match_text(text, keyword),
+            "Delete Selected FreeText Match Text",
+        )
+        self.finish_batch_freetext_text_change(changed, "Deleted selected FreeText match text.")
+
+    def add_selected_batch_freetext(self, addition: str, mode: str) -> None:
+        result = self.selected_batch_freetext_result()
+        if result is None:
+            return
+        if not addition:
+            main_window_dialogs.show_warning(self, "Batch FreeText", "Enter text to add.")
+            return
+        keyword = self.batch_freetext_keyword()
+        changed = self.apply_batch_freetext_text_change(
+            [result],
+            lambda text: add_text_to_match(text, keyword, addition, mode),
+            "Add Text To Selected FreeText",
+        )
+        self.finish_batch_freetext_text_change(changed, "Added text to selected FreeText.")
+
+    def delete_selected_batch_freetext_annotation(self) -> None:
+        result = self.selected_batch_freetext_result()
+        if result is None:
+            return
+        if not main_window_dialogs.ask_yes_no(
+            self,
+            "Delete Selected FreeText",
+            f"Delete this FreeText annotation?\n\nPage {result.page_index + 1}, xref={result.xref}",
+        ):
+            return
+        deleted = self.apply_batch_freetext_annotation_delete([result], "Delete Selected FreeText")
+        self.finish_batch_freetext_annotation_delete(deleted, "Deleted selected FreeText annotation.")
+
+    def delete_all_batch_freetext_annotations(self) -> None:
+        if self.batch_freetext_widget is None:
+            return
+        results = list(self.batch_freetext_widget.results)
+        if not results:
+            main_window_dialogs.show_warning(self, "Batch FreeText", "No FreeText search results to delete.")
+            return
+        unique_targets = self.unique_batch_freetext_targets(results)
+        if not main_window_dialogs.ask_yes_no(
+            self,
+            "Delete All Result FreeText",
+            f"Delete {len(unique_targets)} FreeText annotation(s) from the current results?",
+        ):
+            return
+        deleted = self.apply_batch_freetext_annotation_delete(unique_targets, "Delete All Result FreeText")
+        self.finish_batch_freetext_annotation_delete(deleted, f"Deleted {deleted} FreeText annotation(s).")
+
+    def selected_batch_freetext_result(self) -> FreeTextMatch | None:
+        if self.batch_freetext_widget is None:
+            return None
+        result = self.batch_freetext_widget.selected_result()
+        if result is None:
+            main_window_dialogs.show_warning(self, "Batch FreeText", "Select a FreeText search result first.")
+            return None
+        return result
+
+    def batch_freetext_keyword(self) -> str:
+        if self.batch_freetext_widget is None:
+            return ""
+        return self.batch_freetext_widget.current_keyword().strip()
+
+    def apply_batch_freetext_text_change(self, results: list[FreeTextMatch], transform, label: str) -> int:
+        if self.doc is None:
+            return 0
+        keyword = self.batch_freetext_keyword()
+        if not keyword:
+            main_window_dialogs.show_warning(self, "Batch FreeText", "Enter text to find before editing.")
+            return 0
+
+        changed = 0
+        for result in results:
+            model = self.find_freetext_model_by_xref(result.page_index, result.xref)
+            if model is None:
+                self.log_debug(
+                    f"Batch FreeText skipped missing annotation: page={result.page_index + 1} xref={result.xref}"
+                )
+                continue
+            if keyword not in model.text:
+                self.log_debug(
+                    f"Batch FreeText skipped no-current-match: page={result.page_index + 1} xref={result.xref}"
+                )
+                continue
+
+            new_text = transform(model.text)
+            if new_text == model.text:
+                continue
+            font_size = self.clamp_freetext_font_size(int(round(model.font_size or self.default_freetext_font_size)))
+            color_name = self.annotation_controller.color_name_for_tuple(model.color)
+            color = ANNOTATION_COLORS[color_name]
+            self.annotation_controller.update_freetext_annotation_clean_appearance_on_page(
+                result.page_index,
+                model,
+                new_text,
+                font_size,
+                color,
+            )
+            changed += 1
+
+        self.log_debug(f"Batch FreeText edit: label={label!r} results={len(results)} changed={changed}")
+        return changed
+
+    def unique_batch_freetext_targets(self, results: list[FreeTextMatch]) -> list[FreeTextMatch]:
+        unique: dict[tuple[int, int], FreeTextMatch] = {}
+        for result in results:
+            unique[(result.page_index, result.xref)] = result
+        return sorted(unique.values(), key=lambda item: (item.page_index, item.xref), reverse=True)
+
+    def apply_batch_freetext_annotation_delete(self, results: list[FreeTextMatch], label: str) -> int:
+        if self.doc is None:
+            return 0
+
+        deleted = 0
+        writer = PdfAnnotationWriter(self.doc)
+        for result in self.unique_batch_freetext_targets(results):
+            model = self.find_freetext_model_by_xref(result.page_index, result.xref)
+            if model is None:
+                self.log_debug(
+                    f"Batch FreeText delete skipped missing annotation: "
+                    f"page={result.page_index + 1} xref={result.xref}"
+                )
+                continue
+            page = self.doc[result.page_index]
+            writer.delete_annotation(page, result.xref)
+            deleted += 1
+
+        self.log_debug(f"Batch FreeText delete: label={label!r} results={len(results)} deleted={deleted}")
+        return deleted
+
+    def find_freetext_model_by_xref(self, page_index: int, xref: int) -> AnnotationModel | None:
+        if self.doc is None:
+            return None
+        if page_index < 0 or page_index >= len(self.doc):
+            return None
+        repository = AnnotationRepository(self.doc)
+        for model in repository.load_page_annotations(page_index):
+            if model.app_type == "freetext" and model.xref == xref:
+                return model
+        return None
+
+    def finish_batch_freetext_text_change(self, changed: int, status_message: str) -> None:
+        if changed <= 0:
+            self.statusBar().showMessage("No FreeText annotation was changed.")
+            return
+        self.mark_dirty()
+        self.clear_undo()
+        self.refresh_annotation_overlay(preserve_selection=True)
+        self.refresh_properties_panel()
+        self.statusBar().showMessage(f"{status_message} Use Save to persist.")
+        if self.batch_freetext_widget is not None:
+            self.find_batch_freetext(
+                self.batch_freetext_widget.current_keyword(),
+                self.batch_freetext_widget.current_scope(),
+            )
+
+    def finish_batch_freetext_annotation_delete(self, deleted: int, status_message: str) -> None:
+        if deleted <= 0:
+            self.statusBar().showMessage("No FreeText annotation was deleted.")
+            return
+        self.mark_dirty()
+        self.clear_undo()
+        self.selected_annotation_id = None
+        self.refresh_annotation_overlay(preserve_selection=False)
+        self.refresh_annotations_table()
+        self.refresh_properties_panel()
+        self.statusBar().showMessage(f"{status_message} Use Save to persist.")
+        if self.batch_freetext_widget is not None:
+            self.find_batch_freetext(
+                self.batch_freetext_widget.current_keyword(),
+                self.batch_freetext_widget.current_scope(),
+            )
+
     def rect_text(self, rect: fitz.Rect) -> str:
         return self.annotation_controller.rect_text(rect)
 
@@ -1421,9 +1703,27 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def set_windows_app_user_model_id() -> None:
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        app_id = "JOM.PDFNoteReader.Desktop"
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
+    except Exception:
+        pass
+
+
 def main() -> int:
+    set_windows_app_user_model_id()
     app = QApplication(sys.argv)
+    icon_path = Path(__file__).with_name("assets") / "app_icon.ico"
+    if icon_path.exists():
+        app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()
+    if icon_path.exists():
+        window.setWindowIcon(QIcon(str(icon_path)))
     window.show()
     return app.exec()
 

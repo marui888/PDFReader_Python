@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QDialogButtonBox, QDockWidget, QPlainTextEdit, QSizePolicy, QTabWidget, QVBoxLayout
+from PySide6.QtWidgets import (
+    QDialog,
+    QDialogButtonBox,
+    QDockWidget,
+    QPlainTextEdit,
+    QSizePolicy,
+    QSplitter,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
 
+from app.services.pdf_audit import format_quick_audit_report, quick_audit_current_page_annotations
 from app.widgets.annotation_list import AnnotationListWidget
 from app.widgets.annotation_properties import AnnotationPropertiesWidget
 from app.widgets.annotation_search import AnnotationSearchWidget
+from app.widgets.freetext_batch import FreeTextBatchWidget
 from app.widgets.navigation import NavigationWidget
 
 
@@ -28,8 +40,23 @@ def show_current_page_annotations(window) -> None:
         window.annotations_tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         window.annotations_tabs.setTabPosition(QTabWidget.TabPosition.East)
 
+        annotation_list_page = QWidget()
+        annotation_list_layout = QVBoxLayout(annotation_list_page)
+        annotation_list_layout.setContentsMargins(0, 0, 0, 0)
+        annotation_list_layout.setSpacing(4)
+        annotation_list_splitter = QSplitter(Qt.Orientation.Vertical)
+
         window.annotations_table = AnnotationListWidget(window.rect_text, window.annotation_note)
         window.annotations_table.itemSelectionChanged.connect(window.on_annotations_table_selection_changed)
+        window.quick_audit_text = QPlainTextEdit()
+        window.quick_audit_text.setReadOnly(True)
+        window.quick_audit_text.setMinimumHeight(80)
+        window.quick_audit_text.setPlaceholderText("Quick Audit")
+        annotation_list_splitter.addWidget(window.annotations_table)
+        annotation_list_splitter.addWidget(window.quick_audit_text)
+        annotation_list_splitter.setStretchFactor(0, 4)
+        annotation_list_splitter.setStretchFactor(1, 1)
+        annotation_list_layout.addWidget(annotation_list_splitter)
 
         window.properties_page = AnnotationPropertiesWidget(
             window.on_highlight_property_change,
@@ -40,9 +67,21 @@ def show_current_page_annotations(window) -> None:
             window.add_serial_number_to_selected_freetext,
             window.remove_serial_number_from_selected_freetext,
         )
+        window.batch_freetext_widget = FreeTextBatchWidget(window)
+        window.batch_freetext_widget.search_requested.connect(window.find_batch_freetext)
+        window.batch_freetext_widget.result_activated.connect(window.jump_to_batch_freetext_result)
+        window.batch_freetext_widget.replace_selected_requested.connect(window.replace_selected_batch_freetext)
+        window.batch_freetext_widget.replace_all_requested.connect(window.replace_all_batch_freetext)
+        window.batch_freetext_widget.delete_selected_requested.connect(window.delete_selected_batch_freetext_match)
+        window.batch_freetext_widget.add_selected_requested.connect(window.add_selected_batch_freetext)
+        window.batch_freetext_widget.delete_selected_annotation_requested.connect(
+            window.delete_selected_batch_freetext_annotation
+        )
+        window.batch_freetext_widget.delete_all_annotations_requested.connect(window.delete_all_batch_freetext_annotations)
 
-        window.annotations_tabs.addTab(window.annotations_table, "Annotation List")
+        window.annotations_tabs.addTab(annotation_list_page, "Annotation List")
         window.annotations_tabs.addTab(window.properties_page, "Properties")
+        window.annotations_tabs.addTab(window.batch_freetext_widget, "Batch FreeText")
         window.annotations_dock.setWidget(window.annotations_tabs)
         window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, window.annotations_dock)
         window.resizeDocks([window.annotations_dock], [220], Qt.Orientation.Horizontal)
@@ -69,6 +108,18 @@ def refresh_properties_panel(window) -> None:
 
 def refresh_annotations_table(window) -> None:
     window.annotation_controller.refresh_annotations_table()
+    refresh_quick_audit(window)
+
+
+def refresh_quick_audit(window) -> None:
+    if getattr(window, "quick_audit_text", None) is None:
+        return
+    report = quick_audit_current_page_annotations(
+        window.doc,
+        window.page_index,
+        detailed=window.quick_audit_detailed,
+    )
+    window.quick_audit_text.setPlainText(format_quick_audit_report(report))
 
 
 def show_debug_log(window) -> None:

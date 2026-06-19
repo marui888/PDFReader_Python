@@ -306,6 +306,7 @@ class PdfAnnotationWriter:
         if annot is None:
             raise RuntimeError("The selected annotation was not found on this page.")
 
+        color = self.safe_freetext_edit_color(color)
         new_width, new_height = estimate_size(text, font_size)
         page_rect = page.rect
         x0 = max(page_rect.x0, min(model.rect.x0, page_rect.x1 - new_width))
@@ -316,9 +317,33 @@ class PdfAnnotationWriter:
         annot.update(fontsize=font_size, fontname="helv", text_color=color, fill_color=None, border_color=None)
         self.normalize_freetext_annotation(annot, font_size, color)
 
+    def update_freetext_annotation_clean_appearance(
+        self,
+        page: fitz.Page,
+        model: AnnotationModel,
+        text: str,
+        font_size: int,
+        color: tuple[float, float, float],
+        estimate_size: Callable[[str, int], tuple[float, float]],
+    ) -> None:
+        annot = self.find_page_annotation_by_xref(page, model.xref)
+        if annot is None:
+            raise RuntimeError("The selected annotation was not found on this page.")
+
+        color = self.safe_freetext_edit_color(color)
+        new_width, new_height = estimate_size(text, font_size)
+        page_rect = page.rect
+        x0 = max(page_rect.x0, min(model.rect.x0, page_rect.x1 - new_width))
+        y0 = max(page_rect.y0, min(model.rect.y0, page_rect.y1 - new_height))
+        annot.set_rect(fitz.Rect(x0, y0, x0 + new_width, y0 + new_height))
+        annot.set_info(title="PDF Note Reader", content=text)
+        annot.set_border(width=0)
+        self.normalize_freetext_annotation_clean_appearance(annot, font_size, color)
+
     def normalize_freetext_annotation(
         self, annot: fitz.Annot, font_size: int, color: tuple[float, float, float]
     ) -> None:
+        color = self.safe_freetext_edit_color(color)
         xref = annot.xref
         annot.set_border(width=0)
         annot.update(fontsize=font_size, fontname="helv", text_color=color, fill_color=None, border_color=None)
@@ -328,10 +353,39 @@ class PdfAnnotationWriter:
         self.doc.xref_set_key(xref, "BS", "<</Type/Border/W 0>>")
         self.remove_annotation_keys(xref, ("RC", "BE", "RD"))
 
+    def normalize_freetext_annotation_clean_appearance(
+        self, annot: fitz.Annot, font_size: int, color: tuple[float, float, float]
+    ) -> None:
+        color = self.safe_freetext_edit_color(color)
+        xref = annot.xref
+        annot.set_border(width=0)
+
+        self.remove_annotation_keys(xref, ("AP", "RC", "BE", "RD"))
+        self.doc.xref_set_key(xref, "DA", fitz.get_pdf_str(self.freetext_default_appearance(font_size, color)))
+        self.doc.xref_set_key(xref, "DS", fitz.get_pdf_str(self.freetext_default_style(font_size, color)))
+        self.doc.xref_set_key(xref, "Q", "0")
+        self.doc.xref_set_key(xref, "BS", "<</Type/Border/W 0>>")
+        annot.update(fontsize=font_size, fontname="helv", text_color=color, fill_color=None, border_color=None)
+
     @staticmethod
     def freetext_default_style(font_size: int, color: tuple[float, float, float]) -> str:
         red, green, blue = (max(0, min(255, int(round(channel * 255)))) for channel in color[:3])
         return f"font: 'Helv' ,sans-serif {font_size:.2f}pt;color:#{red:02X}{green:02X}{blue:02X}"
+
+    @staticmethod
+    def freetext_default_appearance(font_size: int, color: tuple[float, float, float]) -> str:
+        red, green, blue = (max(0.0, min(1.0, float(channel))) for channel in color[:3])
+        return f"/Helv {font_size:.2f} Tf {red:.4f} {green:.4f} {blue:.4f} rg"
+
+    @staticmethod
+    def safe_freetext_edit_color(color: tuple[float, float, float] | tuple | None) -> tuple[float, float, float]:
+        if color is None or len(color) < 3:
+            return (1, 0, 0)
+
+        red, green, blue = (max(0.0, min(1.0, float(channel))) for channel in color[:3])
+        if red >= 0.92 and green >= 0.92 and blue >= 0.92:
+            return (1, 0, 0)
+        return (red, green, blue)
 
     def update_highlight_annotation(
         self, page: fitz.Page, model: AnnotationModel, color: tuple[float, float, float], opacity: float
