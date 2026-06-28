@@ -308,10 +308,7 @@ class PdfAnnotationWriter:
 
         color = self.safe_freetext_edit_color(color)
         new_width, new_height = estimate_size(text, font_size)
-        page_rect = page.rect
-        x0 = max(page_rect.x0, min(model.rect.x0, page_rect.x1 - new_width))
-        y0 = max(page_rect.y0, min(model.rect.y0, page_rect.y1 - new_height))
-        annot.set_rect(fitz.Rect(x0, y0, x0 + new_width, y0 + new_height))
+        annot.set_rect(self.freetext_rect_from_left_center(page.rect, model.rect, new_width, new_height))
         annot.set_info(title="PDF Note Reader", content=text)
         annot.set_border(width=0)
         annot.update(fontsize=font_size, fontname="helv", text_color=color, fill_color=None, border_color=None)
@@ -332,13 +329,25 @@ class PdfAnnotationWriter:
 
         color = self.safe_freetext_edit_color(color)
         new_width, new_height = estimate_size(text, font_size)
-        page_rect = page.rect
-        x0 = max(page_rect.x0, min(model.rect.x0, page_rect.x1 - new_width))
-        y0 = max(page_rect.y0, min(model.rect.y0, page_rect.y1 - new_height))
-        annot.set_rect(fitz.Rect(x0, y0, x0 + new_width, y0 + new_height))
+        annot.set_rect(self.freetext_rect_from_left_center(page.rect, model.rect, new_width, new_height))
         annot.set_info(title="PDF Note Reader", content=text)
         annot.set_border(width=0)
         self.normalize_freetext_annotation_clean_appearance(annot, font_size, color)
+
+    def freetext_rect_from_left_center(
+        self,
+        page_rect: fitz.Rect,
+        old_rect: fitz.Rect,
+        new_width: float,
+        new_height: float,
+    ) -> fitz.Rect:
+        width = min(new_width, max(12.0, page_rect.width))
+        height = min(new_height, max(12.0, page_rect.height))
+        anchor_x = old_rect.x0
+        anchor_y = (old_rect.y0 + old_rect.y1) / 2
+        x0 = max(page_rect.x0, min(anchor_x, page_rect.x1 - width))
+        y0 = max(page_rect.y0, min(anchor_y - height / 2, page_rect.y1 - height))
+        return fitz.Rect(x0, y0, x0 + width, y0 + height)
 
     def normalize_freetext_annotation(
         self, annot: fitz.Annot, font_size: int, color: tuple[float, float, float]

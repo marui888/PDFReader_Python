@@ -11,6 +11,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
+    QGridLayout,
     QVBoxLayout,
     QWidget,
 )
@@ -61,13 +62,14 @@ class FreeTextBatchWidget(QWidget):
 
         self.replace_input = QLineEdit()
         self.replace_input.setPlaceholderText("Replace with")
-        self.replace_selected_button = QPushButton("Replace Selected")
-        self.replace_all_button = QPushButton("Replace All Results")
+        self.replace_selected_button = QPushButton("Replace")
+        self.replace_all_button = QPushButton("Replace All")
 
-        replace_controls = QHBoxLayout()
-        replace_controls.addWidget(self.replace_input, 1)
-        replace_controls.addWidget(self.replace_selected_button)
-        replace_controls.addWidget(self.replace_all_button)
+        replace_controls = QGridLayout()
+        replace_controls.addWidget(QLabel("Replace"), 0, 0)
+        replace_controls.addWidget(self.replace_input, 0, 1, 1, 3)
+        replace_controls.addWidget(self.replace_selected_button, 1, 2)
+        replace_controls.addWidget(self.replace_all_button, 1, 3)
 
         self.add_input = QLineEdit()
         self.add_input.setPlaceholderText("Add text")
@@ -75,22 +77,24 @@ class FreeTextBatchWidget(QWidget):
         self.add_mode_combo.addItem("Before Match", "before")
         self.add_mode_combo.addItem("After Match", "after")
         self.add_mode_combo.addItem("End of Note", "end")
-        self.add_selected_button = QPushButton("Add To Selected")
-        self.delete_selected_button = QPushButton("Delete Match Text")
+        self.add_selected_button = QPushButton("Add")
+        self.delete_selected_button = QPushButton("Del Text")
 
-        add_controls = QHBoxLayout()
-        add_controls.addWidget(self.add_input, 1)
-        add_controls.addWidget(self.add_mode_combo)
-        add_controls.addWidget(self.add_selected_button)
-        add_controls.addWidget(self.delete_selected_button)
+        add_controls = QGridLayout()
+        add_controls.addWidget(QLabel("Add"), 0, 0)
+        add_controls.addWidget(self.add_input, 0, 1, 1, 3)
+        add_controls.addWidget(self.add_mode_combo, 1, 1)
+        add_controls.addWidget(self.add_selected_button, 1, 2)
 
-        self.delete_selected_annotation_button = QPushButton("Delete Selected Note")
-        self.delete_all_annotations_button = QPushButton("Delete All Result Notes")
+        self.delete_selected_annotation_button = QPushButton("Del Note")
+        self.delete_all_annotations_button = QPushButton("Del All Notes")
 
         delete_controls = QHBoxLayout()
-        delete_controls.addStretch(1)
+        delete_controls.addWidget(QLabel("Delete"))
+        delete_controls.addWidget(self.delete_selected_button)
         delete_controls.addWidget(self.delete_selected_annotation_button)
         delete_controls.addWidget(self.delete_all_annotations_button)
+        delete_controls.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.addWidget(self.status_label)

@@ -6,6 +6,7 @@ from pathlib import Path
 @dataclass
 class AppSettings:
     use_foxit_freetext: bool = False
+    use_popup_freetext_input: bool = False
     freetext_font_size_min: int = 4
     freetext_font_size_max: int = 20
     default_freetext_font_size: int = 7
@@ -14,6 +15,7 @@ class AppSettings:
     extract_highlight_text_on_reindex: bool = False
     quick_audit_detailed: bool = False
     qpdf_bin_dir: str = r"D:\tools\qpdf-12.3.2-msvc64\bin"
+    save_incremental_safety_default: bool = True
     search_page_size: int = 500
     recent_files: list[dict] = field(default_factory=list)
     recent_search_rule_files: list[str] = field(default_factory=list)
@@ -34,11 +36,17 @@ def load_settings(path: Path, max_recent_files: int = 10) -> AppSettings:
         return settings
 
     settings.use_foxit_freetext = bool(data.get("use_foxit_freetext", settings.use_foxit_freetext))
+    settings.use_popup_freetext_input = bool(
+        data.get("use_popup_freetext_input", settings.use_popup_freetext_input)
+    )
     settings.extract_highlight_text_on_reindex = bool(
         data.get("extract_highlight_text_on_reindex", settings.extract_highlight_text_on_reindex)
     )
     settings.quick_audit_detailed = bool(data.get("quick_audit_detailed", settings.quick_audit_detailed))
     settings.qpdf_bin_dir = str(data.get("qpdf_bin_dir", settings.qpdf_bin_dir))
+    settings.save_incremental_safety_default = bool(
+        data.get("save_incremental_safety_default", settings.save_incremental_safety_default)
+    )
     settings.recent_files = normalize_recent_files(data.get("recent_files", []), max_recent_files)
     settings.recent_search_rule_files = normalize_recent_paths(
         data.get("recent_search_rule_files", []),
@@ -85,8 +93,10 @@ def save_settings(path: Path, settings: AppSettings) -> None:
         "qpdf_bin_dir": settings.qpdf_bin_dir,
         "recent_files": settings.recent_files,
         "recent_search_rule_files": settings.recent_search_rule_files,
+        "save_incremental_safety_default": settings.save_incremental_safety_default,
         "search_page_size": settings.search_page_size,
         "use_foxit_freetext": settings.use_foxit_freetext,
+        "use_popup_freetext_input": settings.use_popup_freetext_input,
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
 

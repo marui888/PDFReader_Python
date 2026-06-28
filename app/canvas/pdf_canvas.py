@@ -139,7 +139,7 @@ class AnnotationScene(QGraphicsScene):
 
     def mouseDoubleClickEvent(self, event) -> None:
         super().mouseDoubleClickEvent(event)
-        self.owner.on_scene_mouse_double_click()
+        self.owner.on_scene_mouse_double_click(event.scenePos())
 
     def contextMenuEvent(self, event) -> None:
         self.owner.clear_scene_drag_state()

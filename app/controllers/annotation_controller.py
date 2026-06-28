@@ -444,13 +444,16 @@ class AnnotationController:
         window.clear_selection_items()
         start = window.clamp_scene_pos_to_page(scene_pos)
         if window.active_tool == "freetext":
-            try:
-                xref = self.create_freetext_annotation_at_point(window.pdf_point_from_scene_point(start))
-                if xref is not None:
-                    self.record_add_undo("Add FreeText", window.page_index, xref)
-                self.set_active_tool("freetext")
-            except Exception as exc:
-                window.show_error("Add FreeText failed", exc)
+            if window.use_popup_freetext_input:
+                try:
+                    xref = self.create_freetext_annotation_at_point(window.pdf_point_from_scene_point(start))
+                    if xref is not None:
+                        self.record_add_undo("Add FreeText", window.page_index, xref)
+                    self.set_active_tool("freetext")
+                except Exception as exc:
+                    window.show_error("Add FreeText failed", exc)
+                return True
+            window.begin_inline_freetext_editor_at_left_center(start)
             return True
 
         window.tool_start_scene_pos = start
@@ -750,7 +753,7 @@ class AnnotationController:
         window = self.window
         if window.doc is None:
             raise RuntimeError("No PDF is open.")
-        PdfAnnotationWriter(window.doc).update_freetext_annotation(
+        PdfAnnotationWriter(window.doc).update_freetext_annotation_clean_appearance(
             window.doc[page_index],
             model,
             text,

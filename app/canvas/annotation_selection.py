@@ -40,7 +40,9 @@ class AnnotationSelectionRenderer:
 
     def draw_square_selection(self, model: AnnotationModel) -> None:
         rect = self.scene_rect(model.rect)
-        self.draw_rect_selection(rect, QColor(0, 0, 0), 3.0, model)
+        color = self.pdf_color(model.color, QColor(255, 0, 0))
+        width = max(1.0, (model.border_width or 1.0) * self.zoom)
+        self.draw_rect_selection(rect, color, width, model)
         self.add_rect_resize_handles(rect, model)
 
     def draw_freetext_selection(self, model: AnnotationModel) -> None:
@@ -62,7 +64,7 @@ class AnnotationSelectionRenderer:
         )
         for name, point, cursor in handles:
             handle_rect = QRectF(point.x() - size / 2, point.y() - size / 2, size, size)
-            item = self.scene.addRect(handle_rect, QPen(QColor(0, 0, 0), 1), QBrush(QColor(255, 255, 255)))
+            item = self.scene.addRect(handle_rect, QPen(QColor(0, 0, 0), 1), QBrush(QColor(0, 0, 0)))
             item.setZValue(25)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)
@@ -92,7 +94,7 @@ class AnnotationSelectionRenderer:
         start, end = self.arrow_points(model)
         color = self.pdf_color(model.color, QColor(255, 0, 0))
         base_width = max(1.0, (model.border_width or 1.0) * self.zoom)
-        pen = QPen(color, base_width + max(1.0, 1.0 * self.zoom))
+        pen = QPen(color, base_width)
         item = self.scene.addLine(QLineF(start, end), pen)
         self.add_selection_item(item)
 
@@ -114,7 +116,7 @@ class AnnotationSelectionRenderer:
         size = max(5.0, 5.0 * self.zoom)
         for name, point in (("start", start), ("end", end)):
             rect = QRectF(point.x() - size / 2, point.y() - size / 2, size, size)
-            item = self.scene.addRect(rect, QPen(color, 1), QBrush(QColor(255, 255, 255)))
+            item = self.scene.addRect(rect, QPen(color, 1), QBrush(QColor(0, 0, 0)))
             item.setZValue(25)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, True)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsMovable, True)

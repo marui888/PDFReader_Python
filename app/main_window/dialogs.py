@@ -83,13 +83,20 @@ def confirm_full_save(window) -> bool:
     )
 
 
-def confirm_save_incremental(window) -> bool:
-    return ask_yes_no(
-        window,
-        "Confirm Save Incremental",
-        "Save Incremental writes changes directly into the current PDF without creating a backup.\n\n"
-        "Continue?",
-    )
+def confirm_save_incremental(window) -> tuple[bool, bool]:
+    message_box = QMessageBox(window)
+    message_box.setIcon(QMessageBox.Icon.Warning)
+    message_box.setWindowTitle("Confirm Save Incremental")
+    message_box.setText("Save Incremental writes changes directly into the current PDF.")
+    message_box.setInformativeText("After saving, this app will close and reopen the current PDF.")
+    safety_checkbox = QCheckBox("Create backup and run QPDF check")
+    safety_checkbox.setChecked(window.save_incremental_safety_default)
+    message_box.setCheckBox(safety_checkbox)
+    confirm_button = message_box.addButton("Save Incremental", QMessageBox.ButtonRole.AcceptRole)
+    message_box.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    message_box.setDefaultButton(confirm_button)
+    message_box.exec()
+    return message_box.clickedButton() is confirm_button, safety_checkbox.isChecked()
 
 
 def confirm_pre_save_audit(window, report_text: str) -> bool:
@@ -128,6 +135,10 @@ def open_settings(window) -> None:
     foxit_checkbox.setChecked(window.use_foxit_freetext)
     layout.addWidget(foxit_checkbox)
 
+    popup_freetext_checkbox = QCheckBox("Use popup input for FreeText")
+    popup_freetext_checkbox.setChecked(window.use_popup_freetext_input)
+    layout.addWidget(popup_freetext_checkbox)
+
     extract_highlight_text_checkbox = QCheckBox("Extract highlighted page text when reindexing")
     extract_highlight_text_checkbox.setChecked(window.extract_highlight_text_on_reindex)
     layout.addWidget(extract_highlight_text_checkbox)
@@ -135,6 +146,10 @@ def open_settings(window) -> None:
     quick_audit_detailed_checkbox = QCheckBox("Quick Audit detailed bounds check")
     quick_audit_detailed_checkbox.setChecked(window.quick_audit_detailed)
     layout.addWidget(quick_audit_detailed_checkbox)
+
+    save_incremental_safety_default_checkbox = QCheckBox("Default backup and QPDF check for Save Incremental")
+    save_incremental_safety_default_checkbox.setChecked(window.save_incremental_safety_default)
+    layout.addWidget(save_incremental_safety_default_checkbox)
 
     form = QFormLayout()
     font_min_spin = QSpinBox()
@@ -173,8 +188,10 @@ def open_settings(window) -> None:
         return
 
     window.set_foxit_freetext(foxit_checkbox.isChecked())
+    window.use_popup_freetext_input = popup_freetext_checkbox.isChecked()
     window.extract_highlight_text_on_reindex = extract_highlight_text_checkbox.isChecked()
     window.quick_audit_detailed = quick_audit_detailed_checkbox.isChecked()
+    window.save_incremental_safety_default = save_incremental_safety_default_checkbox.isChecked()
     window.freetext_font_size_min = max(1, font_min_spin.value())
     window.freetext_font_size_max = max(window.freetext_font_size_min, font_max_spin.value())
     window.default_freetext_font_size = window.clamp_freetext_font_size(font_size_spin.value())

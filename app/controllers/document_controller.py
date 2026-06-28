@@ -443,6 +443,7 @@ class DocumentController:
             window.statusBar().showMessage("No PDF open")
             window.refresh_annotations_table()
             window.refresh_properties_panel()
+            window.refresh_navigation()
             window.refresh_annotation_search_status()
             window.update_actions()
             return
@@ -633,8 +634,10 @@ class DocumentController:
 
         try:
             window.log_debug(f"Save Incremental started: {window.pdf_path}")
+            run_safety_checks = True
             if confirm:
-                if not main_window_dialogs.confirm_save_incremental(window):
+                proceed, run_safety_checks = main_window_dialogs.confirm_save_incremental(window)
+                if not proceed:
                     window.log_debug("Save Incremental canceled by user")
                     return False
 
@@ -648,16 +651,65 @@ class DocumentController:
                 )
                 return False
 
+            backup_path = None
+            report_path = None
+            if run_safety_checks:
+                backup_path = backup_pdf_file(window.pdf_path)
+                window.log_debug(f"Save Incremental backup created: {backup_path}")
             window.doc.saveIncr()
+            if run_safety_checks:
+                report_path = run_qpdf_check(window.pdf_path, window.qpdf_bin_dir, fail_on_error=True)
+                window.log_debug(f"Save Incremental qpdf check OK: {report_path}")
+            self.reopen_current_pdf_after_incremental_save(window.page_index, window.selected_annotation_id)
             window.clear_dirty()
             window.clear_undo()
-            window.log_debug(f"Save Incremental completed: {window.pdf_path}")
-            main_window_dialogs.show_information(window, "Saved", f"Incrementally saved:\n{window.pdf_path}")
+            window.log_debug(f"Save Incremental completed: {window.pdf_path} backup={backup_path}")
+            window.statusBar().showMessage("Incrementally saved and reopened.")
+            details = [f"Incrementally saved and reopened:\n{window.pdf_path}"]
+            if backup_path is not None:
+                details.append(f"Backup:\n{backup_path}")
+            if report_path is not None:
+                details.append(f"QPDF report:\n{report_path}")
+            main_window_dialogs.show_information(
+                window,
+                "Saved",
+                "\n\n".join(details),
+            )
             return True
         except Exception as exc:
             window.log_debug(f"Save Incremental failed: {exc}")
             window.show_error("Save Incremental failed", exc)
             return False
+
+    def reopen_current_pdf_after_incremental_save(
+        self, page_index: int, selected_annotation_id: str | None = None
+    ) -> None:
+        window = self.window
+        if window.pdf_path is None or window.doc is None:
+            return
+
+        current_path = window.pdf_path
+        window.log_debug(f"Reopen after Save Incremental started: {current_path}")
+        window.cancel_add_tool()
+        window.doc.close()
+        window.doc = fitz.open(current_path)
+        if len(window.doc) == 0:
+            window.doc.close()
+            window.doc = None
+            window.annotation_repo = None
+            raise RuntimeError("The incrementally saved PDF has no readable pages after reopening.")
+
+        window.annotation_repo = AnnotationRepository(window.doc)
+        window.page_index = max(0, min(page_index, len(window.doc) - 1))
+        window.selected_annotation_id = selected_annotation_id
+        if window.active_session_index is not None and 0 <= window.active_session_index < len(window.sessions):
+            session = window.sessions[window.active_session_index]
+            session.doc = window.doc
+            session.path = current_path
+            session.page_index = window.page_index
+            session.selected_annotation_id = selected_annotation_id
+        window.render_page(preserve_selection=selected_annotation_id is not None, keep_view_position=True)
+        window.log_debug(f"Reopen after Save Incremental completed: {current_path} pages={len(window.doc)}")
 
     def save_full_rewrite_to_current_path(self) -> Path:
         window = self.window

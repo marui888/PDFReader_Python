@@ -26,6 +26,7 @@ from app.models.annotation_model import (
     AnnotationModel,
 )
 from app.canvas.pdf_canvas import AnnotationScene, PdfCanvasView
+from app.canvas.inline_freetext_editor import InlineFreeTextEditorManager
 from app.services.freetext_batch import FreeTextMatch
 from app.services.freetext_batch import add_text_to_match
 from app.services.freetext_batch import delete_match_text
@@ -63,6 +64,7 @@ class MainWindow(QMainWindow):
         self.page_index = 0
         self.zoom = 1.5
         self.use_foxit_freetext = False
+        self.use_popup_freetext_input = False
         self.freetext_font_size_min = 4
         self.freetext_font_size_max = 20
         self.default_freetext_font_size = 7
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
         self.extract_highlight_text_on_reindex = False
         self.quick_audit_detailed = False
         self.qpdf_bin_dir = r"D:\tools\qpdf-12.3.2-msvc64\bin"
+        self.save_incremental_safety_default = True
         self.search_page_size = 500
         self.recent_files: list[dict] = []
         self.recent_search_rule_files: list[str] = []
@@ -128,6 +131,9 @@ class MainWindow(QMainWindow):
         self.tool_start_scene_pos: QPointF | None = None
         self.tool_preview_item: QGraphicsItem | None = None
         self.tool_preview_items: list[QGraphicsItem] = []
+        self.inline_freetext_editor: InlineFreeTextEditorManager | None = None
+        self.inline_freetext_edit_annotation_id: str | None = None
+        self.hidden_inline_freetext_annotation_id: str | None = None
         self.text_lines_cache_page_index: int | None = None
         self.text_lines_cache: list[list[dict]] | None = None
 
@@ -138,6 +144,12 @@ class MainWindow(QMainWindow):
         self.page_item = QGraphicsPixmapItem()
         self.page_item.setZValue(0)
         self.scene.addItem(self.page_item)
+        self.inline_freetext_editor = InlineFreeTextEditorManager(
+            self.scene,
+            lambda: self.zoom,
+            self.on_inline_freetext_accept,
+            self.on_inline_freetext_cancel,
+        )
         self.document_tabs = QTabBar()
         self.document_tabs.setExpanding(False)
         self.document_tabs.setMovable(False)
@@ -580,6 +592,7 @@ class MainWindow(QMainWindow):
     def load_app_settings(self) -> None:
         settings = load_settings(self.settings_path(), self.max_recent_files)
         self.use_foxit_freetext = settings.use_foxit_freetext
+        self.use_popup_freetext_input = settings.use_popup_freetext_input
         self.freetext_font_size_min = settings.freetext_font_size_min
         self.freetext_font_size_max = settings.freetext_font_size_max
         self.default_freetext_font_size = settings.default_freetext_font_size
@@ -588,6 +601,7 @@ class MainWindow(QMainWindow):
         self.extract_highlight_text_on_reindex = settings.extract_highlight_text_on_reindex
         self.quick_audit_detailed = settings.quick_audit_detailed
         self.qpdf_bin_dir = settings.qpdf_bin_dir
+        self.save_incremental_safety_default = settings.save_incremental_safety_default
         self.search_page_size = settings.search_page_size
         self.recent_files = settings.recent_files
         self.recent_search_rule_files = settings.recent_search_rule_files
@@ -595,6 +609,7 @@ class MainWindow(QMainWindow):
     def save_app_settings(self) -> None:
         settings = AppSettings(
             use_foxit_freetext=self.use_foxit_freetext,
+            use_popup_freetext_input=self.use_popup_freetext_input,
             freetext_font_size_min=self.freetext_font_size_min,
             freetext_font_size_max=self.freetext_font_size_max,
             default_freetext_font_size=self.default_freetext_font_size,
@@ -603,6 +618,7 @@ class MainWindow(QMainWindow):
             extract_highlight_text_on_reindex=self.extract_highlight_text_on_reindex,
             quick_audit_detailed=self.quick_audit_detailed,
             qpdf_bin_dir=self.qpdf_bin_dir,
+            save_incremental_safety_default=self.save_incremental_safety_default,
             search_page_size=self.search_page_size,
             recent_files=self.recent_files,
             recent_search_rule_files=self.recent_search_rule_files,
@@ -748,9 +764,16 @@ class MainWindow(QMainWindow):
     ) -> QRectF:
         return self.annotation_controller.resized_scene_rect_preview(model, handle, dx_pdf, dy_pdf)
 
-    def on_scene_mouse_double_click(self) -> None:
-        if self.selected_annotation_id is not None:
-            self.show_annotation_properties()
+    def on_scene_mouse_double_click(self, scene_pos: QPointF | None = None) -> None:
+        if self.selected_annotation_id is None:
+            return
+        if (
+            not self.use_popup_freetext_input
+            and scene_pos is not None
+            and self.begin_inline_edit_for_selected_freetext(scene_pos)
+        ):
+            return
+        self.show_annotation_properties()
 
     def move_pdf_annotation(self, model: AnnotationModel, dx: float, dy: float) -> None:
         if self.doc is None:
@@ -1494,6 +1517,148 @@ class MainWindow(QMainWindow):
     def cancel_add_tool(self) -> None:
         self.annotation_controller.cancel_add_tool()
 
+    def begin_inline_freetext_editor(
+        self,
+        scene_pos: QPointF,
+        text: str = "",
+        width: float = 220.0,
+        height: float = 72.0,
+        font_size: int | None = None,
+        edit_annotation_id: str | None = None,
+    ) -> None:
+        if self.inline_freetext_editor is None:
+            return
+        self.inline_freetext_editor.begin(
+            scene_pos,
+            text=text,
+            width=width,
+            height=height,
+            font_size=font_size or self.default_freetext_font_size,
+        )
+        self.inline_freetext_edit_annotation_id = edit_annotation_id
+
+    def default_inline_freetext_editor_height(self, font_size: int | None = None) -> float:
+        size = font_size or self.default_freetext_font_size
+        font_px = max(1, int(round(size * self.zoom)))
+        return float(max(14, ceil(font_px + 2)))
+
+    def begin_inline_freetext_editor_at_left_center(
+        self,
+        scene_pos: QPointF,
+        text: str = "",
+        width: float = 220.0,
+        height: float | None = None,
+        font_size: int | None = None,
+    ) -> None:
+        height = height or self.default_inline_freetext_editor_height(font_size)
+        top_left = QPointF(scene_pos.x(), scene_pos.y() - height / 2)
+        page_rect = self.page_item.boundingRect()
+        top_left.setX(max(page_rect.left(), min(top_left.x(), page_rect.right() - width)))
+        top_left.setY(max(page_rect.top(), min(top_left.y(), page_rect.bottom() - height)))
+        self.begin_inline_freetext_editor(top_left, text, width, height, font_size)
+
+    def cancel_inline_freetext_editor(self) -> None:
+        if self.inline_freetext_editor is not None:
+            self.inline_freetext_editor.cancel()
+
+    def begin_inline_edit_for_selected_freetext(self, scene_pos: QPointF) -> bool:
+        if self.selected_annotation_id is None:
+            return False
+        hit = self.annotation_hit_at_scene_pos(scene_pos)
+        if hit is None or hit[0] != self.selected_annotation_id:
+            return False
+        if hit[1] in {"resize-handle", "arrow-endpoint-handle"}:
+            return False
+
+        model = self.annotation_model_map.get(self.selected_annotation_id)
+        if model is None or model.app_type != "freetext":
+            return False
+
+        rect = self.scene_rect(model.rect)
+        self.hide_inline_freetext_overlay(model.id)
+        self.begin_inline_freetext_editor(
+            rect.topLeft(),
+            text=model.text,
+            width=max(40.0, rect.width()),
+            height=max(self.default_inline_freetext_editor_height(int(model.font_size or self.default_freetext_font_size)), rect.height()),
+            font_size=int(model.font_size or self.default_freetext_font_size),
+            edit_annotation_id=model.id,
+        )
+        self.statusBar().showMessage("Editing FreeText inline. Ctrl+Enter to apply, Esc to cancel.")
+        return True
+
+    def on_inline_freetext_accept(self, text: str, scene_pos: QPointF, scene_size) -> None:
+        if self.doc is None:
+            return
+        edit_annotation_id = self.inline_freetext_edit_annotation_id
+        self.inline_freetext_edit_annotation_id = None
+        if edit_annotation_id is not None:
+            self.finish_inline_freetext_edit(edit_annotation_id, text)
+            return
+
+        text = text.strip()
+        if not text:
+            self.log_debug("Inline FreeText accepted empty text; no annotation created")
+            return
+        try:
+            scene_rect = QRectF(scene_pos, scene_size)
+            rect = self.pdf_rect_from_scene_rect(scene_rect)
+            xref = self.create_freetext_annotation(rect, text)
+            self.record_add_undo("Add FreeText", self.page_index, xref)
+            self.set_active_tool("freetext")
+            self.statusBar().showMessage(f"Added FreeText xref={xref}. Use Save to persist.")
+            self.log_debug(
+                f"Inline FreeText created: xref={xref} chars={len(text)} "
+                f"scene=({scene_pos.x():.1f},{scene_pos.y():.1f}) "
+                f"size=({scene_size.width():.1f},{scene_size.height():.1f})"
+            )
+        except Exception as exc:
+            self.show_error("Add FreeText failed", exc)
+
+    def on_inline_freetext_cancel(self) -> None:
+        self.inline_freetext_edit_annotation_id = None
+        self.show_hidden_inline_freetext_overlay()
+        self.log_debug("Inline FreeText canceled")
+
+    def finish_inline_freetext_edit(self, annotation_id: str, text: str) -> None:
+        model = self.annotation_model_map.get(annotation_id)
+        if model is None or model.app_type != "freetext":
+            self.log_debug(f"Inline FreeText edit skipped: annotation not found id={annotation_id}")
+            return
+        if self.selected_annotation_id != annotation_id:
+            self.select_annotation(annotation_id)
+        if text == model.text:
+            self.show_hidden_inline_freetext_overlay()
+            self.statusBar().showMessage(f"FreeText unchanged xref={model.xref}.")
+            return
+        try:
+            font_size = int(model.font_size or self.default_freetext_font_size)
+            color = model.color or (1, 0, 0)
+            self.annotation_controller.on_freetext_property_change(text, font_size, color)
+            self.statusBar().showMessage(f"Edited FreeText xref={model.xref}. Use Save to persist.")
+            self.log_debug(f"Inline FreeText edited: xref={model.xref} chars={len(text)}")
+        except Exception as exc:
+            self.show_hidden_inline_freetext_overlay()
+            self.show_error("Edit FreeText failed", exc)
+
+    def hide_inline_freetext_overlay(self, annotation_id: str) -> None:
+        self.show_hidden_inline_freetext_overlay()
+        for item in self.annotation_item_map.get(annotation_id, []):
+            item.setVisible(False)
+        for item in self.selection_items:
+            item.setVisible(False)
+        self.hidden_inline_freetext_annotation_id = annotation_id
+
+    def show_hidden_inline_freetext_overlay(self) -> None:
+        annotation_id = self.hidden_inline_freetext_annotation_id
+        if annotation_id is None:
+            return
+        for item in self.annotation_item_map.get(annotation_id, []):
+            item.setVisible(True)
+        for item in self.selection_items:
+            item.setVisible(True)
+        self.hidden_inline_freetext_annotation_id = None
+
     def on_tool_mouse_press(self, scene_pos: QPointF) -> bool:
         return self.annotation_controller.on_tool_mouse_press(scene_pos)
 
@@ -1521,15 +1686,21 @@ class MainWindow(QMainWindow):
     def pdf_rect_from_scene_points(self, start: QPointF, end: QPointF) -> fitz.Rect:
         return self.canvas_controller.pdf_rect_from_scene_points(start, end)
 
+    def pdf_rect_from_scene_rect(self, rect: QRectF) -> fitz.Rect:
+        top_left = rect.topLeft()
+        bottom_right = rect.bottomRight()
+        return self.pdf_rect_from_scene_points(top_left, bottom_right)
+
     def create_freetext_annotation_at_point(self, point: tuple[float, float]) -> int | None:
         return self.annotation_controller.create_freetext_annotation_at_point(point)
 
     def default_freetext_rect(self, point: tuple[float, float], text: str, font_size: int) -> fitz.Rect:
         page_rect = self.current_page().rect
         width, height = self.estimated_freetext_size(text, font_size)
+        width = min(width, max(12.0, page_rect.width))
         height = min(height, max(12.0, page_rect.height))
         x0 = min(max(page_rect.x0, point[0]), page_rect.x1 - width)
-        y0 = min(max(page_rect.y0, point[1]), page_rect.y1 - height)
+        y0 = min(max(page_rect.y0, point[1] - height / 2), page_rect.y1 - height)
         return fitz.Rect(x0, y0, x0 + width, y0 + height)
 
     def estimated_freetext_size(self, text: str, font_size: int) -> tuple[float, float]:
@@ -1680,6 +1851,14 @@ class MainWindow(QMainWindow):
         main_window_dialogs.show_error(self, title, exc)
 
     def keyPressEvent(self, event) -> None:
+        if (
+            event.key() == Qt.Key.Key_Escape
+            and self.inline_freetext_editor is not None
+            and self.inline_freetext_editor.is_active()
+        ):
+            self.inline_freetext_editor.cancel()
+            event.accept()
+            return
         if event.key() == Qt.Key.Key_Escape and self.active_tool is not None:
             self.cancel_add_tool()
             self.show_page_status()
@@ -1724,7 +1903,7 @@ def main() -> int:
     window = MainWindow()
     if icon_path.exists():
         window.setWindowIcon(QIcon(str(icon_path)))
-    window.show()
+    window.showMaximized()
     return app.exec()
 
 

@@ -32,7 +32,7 @@ def resolve_qpdf_executable(qpdf_bin_dir: str) -> Path | None:
     return None
 
 
-def run_qpdf_check(pdf_path: Path, qpdf_bin_dir: str) -> Path:
+def run_qpdf_check(pdf_path: Path, qpdf_bin_dir: str, fail_on_error: bool = False) -> Path:
     if not pdf_path.exists():
         raise FileNotFoundError(f"PDF file not found:\n{pdf_path}")
 
@@ -45,21 +45,37 @@ def run_qpdf_check(pdf_path: Path, qpdf_bin_dir: str) -> Path:
 
     report_path = pdf_path.with_name(f"{pdf_path.name}.qpdf-{timestamp_for_filename()}.txt")
     command = [str(qpdf_exe), "--check", str(pdf_path)]
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        check=False,
+    )
 
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
     report_lines = [
         f"PDF: {pdf_path}",
         f"Command: {' '.join(command)}",
         f"Exit code: {completed.returncode}",
         "",
         "STDOUT:",
-        completed.stdout.rstrip(),
+        stdout.rstrip(),
         "",
         "STDERR:",
-        completed.stderr.rstrip(),
+        stderr.rstrip(),
         "",
     ]
     report_path.write_text("\n".join(report_lines), encoding="utf-8")
+    if fail_on_error and completed.returncode != 0:
+        raise RuntimeError(
+            "qpdf check failed.\n\n"
+            f"Report:\n{report_path}\n\n"
+            f"Exit code: {completed.returncode}"
+        )
     return report_path
 
 
@@ -78,8 +94,18 @@ def rewrite_pdf_with_qpdf(pdf_path: Path, qpdf_bin_dir: str) -> Path:
     rewritten_path = pdf_path.with_name(f"{pdf_path.name}.qpdf-rewrite-{timestamp}.pdf")
     report_path = pdf_path.with_name(f"{pdf_path.name}.qpdf-rewrite-{timestamp}.txt")
     command = [str(qpdf_exe), str(pdf_path), str(rewritten_path)]
-    completed = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+    completed = subprocess.run(
+        command,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=120,
+        check=False,
+    )
 
+    stdout = completed.stdout or ""
+    stderr = completed.stderr or ""
     report_lines = [
         f"PDF: {pdf_path}",
         f"Output: {rewritten_path}",
@@ -87,10 +113,10 @@ def rewrite_pdf_with_qpdf(pdf_path: Path, qpdf_bin_dir: str) -> Path:
         f"Exit code: {completed.returncode}",
         "",
         "STDOUT:",
-        completed.stdout.rstrip(),
+        stdout.rstrip(),
         "",
         "STDERR:",
-        completed.stderr.rstrip(),
+        stderr.rstrip(),
         "",
     ]
     report_path.write_text("\n".join(report_lines), encoding="utf-8")

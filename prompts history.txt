@@ -19,6 +19,125 @@ SQLite: 注释索引、位置标记、属性标记查询
 
 ====================****************=====================
 =========================================================
+//mr:: 2026_06_29 02_26_59
+
+BUG:
+关闭最后一个文件后（而不关闭APP），若这个文件有目录，它的目录并没有清空。
+
+//mr:: 2026_06_29 01_56_42
+
+是否让 Create backup and run QPDF check 成为默认值，
+在setting里面增加一个选项，用于设置是否让 Create backup and run QPDF check 成为默认值。
+
+
+//mr:: 2026_06_29 01_30_14
+
+问题好像没有再出现了。后面还需要再试试。
+
+修改需求：
+1. 把  创建备份 和 qpdf check 做成同一选项，出现在点击SaveIncr的对话框中，如果勾选，就做 创建备份 和 qpdf check 
+2. Square注释被选中时，不要变成黑色边框，还是保留原理来的颜色。
+3. Arraw注释被选中是，不要加粗线条。
+4. 所有的注释（高亮除外），被选中时，都会出现 handler，这些handler是小小的矩形，全部改成黑色背景。
+5. 程序打开时，就最大化。
+6. 增加“Incrementally saved and reopened.”的提示在状态栏（和我们刚才讨论的一样）
+
+
+
+//mr:: 2026_06_29 01_07_08
+
+我刚才试了 Square注释，也有一样的问题。
+
+//mr:: 2026_06_29 00_44_04
+
+现在我使用 “弹出编辑框”，做了一些测试。
+发现3种场景：
+1. 添加一个新的FreeText，输入文本内容，关闭编辑框，点击SaveIncr，不报错。
+
+2. 添加一个新的FreeText，输入文本内容，关闭编辑框，选择这个Free Text，移动一段距离，点击SaveIncr，不报错。
+
+3. 添加一个新的FreeText，输入文本内容，关闭编辑框，选择这个Free Text，点击SaveIncr，不报错。
+关闭PDF，再打开PDF，选中这个FreeText，移动一段距离，点击SaveIncr，报错。
+
+4. 添加一个新的FreeText，输入文本内容，关闭编辑框，选择这个Free Text，移动一段距离，点击SaveIncr，不报错。再次选中这个
+FreeText，移动一段距离，点击SaveIncr，报错。
+
+而且报错内容都是类似于：
+
+STDERR:
+WARNING: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf: file is damaged
+WARNING: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf (offset 3079828): xref not found
+WARNING: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf: Attempting to reconstruct cross-reference table
+WARNING: object 10 0: operation for dictionary attempted on object of type null: returning false for a key containment request
+qpdf: D:\prj_PDFReader\pdfdoc\Peter Hessler：River Town_JOM.pdf: root of pages tree has no /Kids array
+
+这里的 OffSet 应该与 “移动一段距离”有关，而且都是报“xref not found”。
+
+
+
+
+
+//mr:: 2026_06_28 23_56_43
+
+在实现 页面内文本框编辑 前，我们生成新的FreeText会弹出对话框，编辑FreeText是通过属性编辑框（右侧Docking）
+来实现的（称为 弹出编辑框 方法）。
+
+当前问题：保存注释被编辑后的PDF文件，QPDF工具可能报错(都是报错 xref not found），Foxit可能报错。
+我估计这个问题与PyMuPDF的关系应该不大，或者跟我们更改了FreeText的交互模式有关系。
+
+
+这个问题需要多做测试。
+
+我建议：
+1. 页面内文本框编辑 
+2. 弹出编辑框
+恢复第二种方法，在Setting里添加一个checkbox（ using popup input for FreeText）
+来选择使用那么方法。 这样我可以做针对性测试。
+
+//mr:: 2026_06_28 18_20_07
+
+貌似，在FreeText文本中同时输入中文和数字，再保存。Foxit打开就会报错。
+
+//mr:: 2026_06_28 18_05_02
+
+生成一条新的FreeText(文本全是数字），保存，用Foxit打开，OK。
+再用我们的软件打开，修改这条FreeText的内容（文本全是数字），再保存，Foxit打开OK
+再用我们的软件打开，修改这条FreeText的内容（文本末尾添加中文），再保存，Foxit打开：文件损坏。
+再用我们的软件打开，没问题。
+
+报错见附件txt。
+
+//mr:: 2026_06_28 17_30_29
+
+1. 输入文本内容，点击CTRL+ENTER 确认并结束编辑，实际FreeText注释文字的内容向左上角轻微偏移，这应该是为适应
+前面的需求而定的。
+2. 我们实现的这个定制的 inline 文本编辑，能不能尽量适应这个需求：不要设置padding等等。
+3. 类似，当编辑一个存在的Freetext时，双击文本区域，进入编辑模式，文本内容会向右下方偏移。而且FreeText的内容
+也原本在页面上，同时可见，就重叠在一起了。
+
+//mr:: 2026_06_28 16_51_37
+
+放大字体大小，矩形区域的位置会重新计算，重新计算的“不动点“就不应该是 左上角， 而应该是 ”左边框的中点“
+
+//mr:: 2026_06_28 16_01_28
+
+现在可以输入4中类型的注释，
+当输入FreeText注释的模式的时候，鼠标点击左键，会弹出一个对话框，输入文本内容后， 确认后，在响应位置生成一个Freetext注释。
+
+1. 实际生成的Freetext注释的位置需要调整。 每一个已经生成的Freetext注释有一个“矩形区域”，大约是，这个矩形的左上角对应“鼠标
+左键单击的位置”。我的需求是，这个矩形的左边框中点对应“鼠标左键单击的位置”。
+
+2. 输入FreeText的方式，需要模仿商业软件的方式：
+2.1  鼠标左键单击后，动态生成一个透明背景的可以输入内容的文本框，用户输入内容完成后，就在文本框所在位置，原样生成FreeText注释（当然
+这说的overlay层面的注释）。
+2.2  对已经生成的注释，单击选中，选中后，再双击内容区，进入内容编辑状态（从实现上说，可能也要动态生成一个“文本框”），可以编辑文本内容。 而不用转到右侧docking区域的，属性编辑框
+来编辑文本内容。
+模拟一种“所见即所得”的输入和修改方式。
+
+提出你的解决方法和实施步骤。
+
+=========================================================
+
 
 //mr:: 2026_06_19 11_45_14
 
