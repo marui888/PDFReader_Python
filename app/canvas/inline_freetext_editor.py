@@ -3,16 +3,21 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from PySide6.QtCore import QPointF, QSizeF, Qt, Signal
-from PySide6.QtGui import QFont, QKeyEvent
+from PySide6.QtGui import QContextMenuEvent, QFont, QKeyEvent
 from PySide6.QtWidgets import QAbstractScrollArea, QFrame, QGraphicsProxyWidget, QGraphicsScene, QPlainTextEdit
+
+from app.services.keyword_repository import KeywordGroup
+from app.widgets.keyword_popup import KeywordPopup
 
 
 class InlineFreeTextEdit(QPlainTextEdit):
     accepted = Signal(str)
     canceled = Signal()
 
-    def __init__(self, text: str = "", parent=None) -> None:
+    def __init__(self, text: str = "", keyword_groups: list[KeywordGroup] | None = None, parent=None) -> None:
         super().__init__(parent)
+        self.keyword_groups = keyword_groups or []
+        self.keyword_popup: KeywordPopup | None = None
         self.setPlainText(text)
         self.setFrameShape(QFrame.Shape.NoFrame)
         self.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -44,6 +49,25 @@ class InlineFreeTextEdit(QPlainTextEdit):
             return
         super().keyPressEvent(event)
 
+    def contextMenuEvent(self, event: QContextMenuEvent) -> None:
+        if self.show_keyword_popup(event.globalPos()):
+            event.accept()
+            return
+
+        super().contextMenuEvent(event)
+
+    def show_keyword_popup(self, global_pos) -> bool:
+        if not self.keyword_groups:
+            return False
+
+        popup = KeywordPopup(self.keyword_groups, None)
+        self.keyword_popup = popup
+        popup.keyword_selected.connect(self.insertPlainText)
+        popup.finished.connect(lambda _result: setattr(self, "keyword_popup", None))
+        popup.move(global_pos.toPoint() if hasattr(global_pos, "toPoint") else global_pos)
+        popup.show()
+        return True
+
 
 class InlineFreeTextEditorManager:
     def __init__(
@@ -52,16 +76,28 @@ class InlineFreeTextEditorManager:
         zoom_getter: Callable[[], float],
         accepted_callback: Callable[[str, QPointF, QSizeF], None] | None = None,
         canceled_callback: Callable[[], None] | None = None,
+        keyword_groups: list[KeywordGroup] | None = None,
     ) -> None:
         self.scene = scene
         self.zoom_getter = zoom_getter
         self.accepted_callback = accepted_callback
         self.canceled_callback = canceled_callback
+        self.keyword_groups = keyword_groups or []
         self.proxy: QGraphicsProxyWidget | None = None
         self.editor: InlineFreeTextEdit | None = None
 
     def is_active(self) -> bool:
         return self.proxy is not None
+
+    def contains_scene_pos(self, scene_pos: QPointF) -> bool:
+        if self.proxy is None:
+            return False
+        return self.proxy.sceneBoundingRect().contains(scene_pos)
+
+    def show_keyword_popup(self, global_pos) -> bool:
+        if self.editor is None:
+            return False
+        return self.editor.show_keyword_popup(global_pos)
 
     def begin(
         self,
@@ -72,7 +108,7 @@ class InlineFreeTextEditorManager:
         font_size: int = 7,
     ) -> None:
         self.cancel()
-        editor = InlineFreeTextEdit(text)
+        editor = InlineFreeTextEdit(text, self.keyword_groups)
         zoom = self.zoom_getter()
         font = QFont("Arial")
         font.setPixelSize(max(1, int(round(font_size * zoom))))
@@ -98,6 +134,11 @@ class InlineFreeTextEditorManager:
         self.clear()
         if self.accepted_callback is not None:
             self.accepted_callback(text, pos, size)
+
+    def accept_current(self) -> None:
+        if self.editor is None:
+            return
+        self.accept(self.editor.toPlainText())
 
     def cancel(self) -> None:
         if self.proxy is None and self.editor is None:

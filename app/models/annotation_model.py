@@ -12,6 +12,17 @@ ANNOTATION_COLORS = {
     "Blue": (0, 0, 1),
     "Green": (0, 0.55, 0),
     "Yellow": (1, 0.85, 0),
+    "Purple": (0.55, 0, 0.85),
+    "Brown": (0.45, 0.25, 0.08),
+}
+
+QUICK_HIGHLIGHT_COLORS = {
+    "Red": (1, 0, 0),
+    "Blue": (0, 0.25, 1),
+    "Yellow": (1, 1, 0),
+    "Green": (0, 0.65, 0),
+    "Purple": (0.55, 0, 0.85),
+    "Brown": (0.45, 0.25, 0.08),
 }
 
 

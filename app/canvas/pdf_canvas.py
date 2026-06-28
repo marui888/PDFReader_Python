@@ -12,6 +12,8 @@ class PdfCanvasView(QGraphicsView):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setBackgroundBrush(Qt.GlobalColor.darkGray)
         self.setDragMode(QGraphicsView.DragMode.NoDrag)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
         self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
         self.setRenderHints(QPainter.RenderHint.Antialiasing | QPainter.RenderHint.SmoothPixmapTransform)
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
@@ -120,7 +122,8 @@ class AnnotationScene(QGraphicsScene):
         if self.owner.on_tool_mouse_press(event.scenePos()):
             return
         if event.button() == Qt.MouseButton.LeftButton:
-            self.owner.on_scene_mouse_press(event.scenePos())
+            if self.owner.on_scene_mouse_press(event.scenePos()):
+                return
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
@@ -129,6 +132,8 @@ class AnnotationScene(QGraphicsScene):
         super().mouseMoveEvent(event)
         if event.buttons() & Qt.MouseButton.LeftButton:
             self.owner.on_scene_mouse_move(event.scenePos())
+        else:
+            self.owner.on_scene_mouse_hover(event.scenePos())
 
     def mouseReleaseEvent(self, event) -> None:
         if self.owner.on_tool_mouse_release(event.scenePos()):
@@ -138,9 +143,15 @@ class AnnotationScene(QGraphicsScene):
             self.owner.on_scene_mouse_release(event.scenePos())
 
     def mouseDoubleClickEvent(self, event) -> None:
+        if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
+            super().mouseDoubleClickEvent(event)
+            return
         super().mouseDoubleClickEvent(event)
         self.owner.on_scene_mouse_double_click(event.scenePos())
 
     def contextMenuEvent(self, event) -> None:
+        if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
+            if self.owner.show_inline_freetext_context_menu(event.screenPos()):
+                return
         self.owner.clear_scene_drag_state()
         self.owner.show_annotation_context_menu(event.scenePos(), event.screenPos())

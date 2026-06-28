@@ -16,6 +16,7 @@ from app.controllers.view_history_controller import ViewHistoryController
 from app.models.app_state import AppState
 from app.models.document_session import DocumentSession
 from app.services.index_worker import ReindexWorker
+from app.services.keyword_repository import load_keyword_groups
 from app.main_window import actions as main_window_actions
 from app.main_window import dialogs as main_window_dialogs
 from app.main_window import docks as main_window_docks
@@ -75,6 +76,7 @@ class MainWindow(QMainWindow):
         self.qpdf_bin_dir = r"D:\tools\qpdf-12.3.2-msvc64\bin"
         self.save_incremental_safety_default = True
         self.search_page_size = 500
+        self.keyword_groups = load_keyword_groups(self.keyword_metadata_dir())
         self.recent_files: list[dict] = []
         self.recent_search_rule_files: list[str] = []
         self.max_recent_files = 10
@@ -131,8 +133,13 @@ class MainWindow(QMainWindow):
         self.tool_start_scene_pos: QPointF | None = None
         self.tool_preview_item: QGraphicsItem | None = None
         self.tool_preview_items: list[QGraphicsItem] = []
+        self.text_selection_active = False
+        self.text_selection_start_scene_pos: QPointF | None = None
+        self.text_selection_items: list[QGraphicsItem] = []
+        self.text_selection_rects: list[fitz.Rect] = []
         self.inline_freetext_editor: InlineFreeTextEditorManager | None = None
         self.inline_freetext_edit_annotation_id: str | None = None
+        self.inline_freetext_clear_selection_on_accept = False
         self.hidden_inline_freetext_annotation_id: str | None = None
         self.text_lines_cache_page_index: int | None = None
         self.text_lines_cache: list[list[dict]] | None = None
@@ -149,6 +156,7 @@ class MainWindow(QMainWindow):
             lambda: self.zoom,
             self.on_inline_freetext_accept,
             self.on_inline_freetext_cancel,
+            self.keyword_groups,
         )
         self.document_tabs = QTabBar()
         self.document_tabs.setExpanding(False)
@@ -195,6 +203,9 @@ class MainWindow(QMainWindow):
         self.create_toolbar()
         self.show_current_page_annotations()
         self.update_actions()
+
+    def keyword_metadata_dir(self) -> Path:
+        return Path(__file__).with_name("metaData")
 
     @property
     def updating_document_tabs(self) -> bool:
@@ -677,8 +688,8 @@ class MainWindow(QMainWindow):
     def on_scene_selection_changed(self) -> None:
         self.annotation_controller.on_scene_selection_changed()
 
-    def on_scene_mouse_press(self, scene_pos: QPointF) -> None:
-        self.annotation_controller.on_scene_mouse_press(scene_pos)
+    def on_scene_mouse_press(self, scene_pos: QPointF) -> bool:
+        return self.annotation_controller.on_scene_mouse_press(scene_pos)
 
     def clear_scene_drag_state(self) -> None:
         self.annotation_controller.clear_scene_drag_state()
@@ -898,6 +909,10 @@ class MainWindow(QMainWindow):
         self, model: AnnotationModel, color: tuple[float, float, float], opacity: float
     ) -> None:
         self.annotation_controller.update_highlight_annotation(model, color, opacity)
+
+    def apply_quick_highlight_color(self, color: tuple[float, float, float]) -> None:
+        opacity = self.quick_highlight_opacity_spin.value() / 100 if hasattr(self, "quick_highlight_opacity_spin") else 1
+        self.annotation_controller.apply_quick_highlight_color(color, opacity)
 
     def update_stroked_annotation(self, model: AnnotationModel, color: tuple[float, float, float], width: int) -> None:
         self.annotation_controller.update_stroked_annotation(model, color, width)
@@ -1561,6 +1576,27 @@ class MainWindow(QMainWindow):
         if self.inline_freetext_editor is not None:
             self.inline_freetext_editor.cancel()
 
+    def confirm_inline_freetext_editor_from_canvas_click(self, scene_pos: QPointF) -> bool:
+        if self.inline_freetext_editor is None or not self.inline_freetext_editor.is_active():
+            return False
+        if self.inline_freetext_editor.contains_scene_pos(scene_pos):
+            return False
+        self.inline_freetext_clear_selection_on_accept = True
+        self.inline_freetext_editor.accept_current()
+        return True
+
+    def is_inline_freetext_editor_hit(self, scene_pos: QPointF) -> bool:
+        return (
+            self.inline_freetext_editor is not None
+            and self.inline_freetext_editor.is_active()
+            and self.inline_freetext_editor.contains_scene_pos(scene_pos)
+        )
+
+    def show_inline_freetext_context_menu(self, screen_pos) -> bool:
+        if self.inline_freetext_editor is None:
+            return False
+        return self.inline_freetext_editor.show_keyword_popup(screen_pos)
+
     def begin_inline_edit_for_selected_freetext(self, scene_pos: QPointF) -> bool:
         if self.selected_annotation_id is None:
             return False
@@ -1591,14 +1627,20 @@ class MainWindow(QMainWindow):
         if self.doc is None:
             return
         edit_annotation_id = self.inline_freetext_edit_annotation_id
+        clear_selection = self.inline_freetext_clear_selection_on_accept
         self.inline_freetext_edit_annotation_id = None
+        self.inline_freetext_clear_selection_on_accept = False
         if edit_annotation_id is not None:
             self.finish_inline_freetext_edit(edit_annotation_id, text)
+            if clear_selection:
+                self.select_annotation(None)
             return
 
         text = text.strip()
         if not text:
             self.log_debug("Inline FreeText accepted empty text; no annotation created")
+            if clear_selection:
+                self.select_annotation(None)
             return
         try:
             scene_rect = QRectF(scene_pos, scene_size)
@@ -1612,11 +1654,14 @@ class MainWindow(QMainWindow):
                 f"scene=({scene_pos.x():.1f},{scene_pos.y():.1f}) "
                 f"size=({scene_size.width():.1f},{scene_size.height():.1f})"
             )
+            if clear_selection:
+                self.select_annotation(None)
         except Exception as exc:
             self.show_error("Add FreeText failed", exc)
 
     def on_inline_freetext_cancel(self) -> None:
         self.inline_freetext_edit_annotation_id = None
+        self.inline_freetext_clear_selection_on_accept = False
         self.show_hidden_inline_freetext_overlay()
         self.log_debug("Inline FreeText canceled")
 
@@ -1667,6 +1712,9 @@ class MainWindow(QMainWindow):
 
     def on_tool_mouse_release(self, scene_pos: QPointF) -> bool:
         return self.annotation_controller.on_tool_mouse_release(scene_pos)
+
+    def on_scene_mouse_hover(self, scene_pos: QPointF) -> None:
+        self.annotation_controller.on_scene_mouse_hover(scene_pos)
 
     def update_tool_preview(self, scene_pos: QPointF) -> None:
         self.annotation_controller.update_tool_preview(scene_pos)

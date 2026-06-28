@@ -1,5 +1,7 @@
 from collections.abc import Callable
 
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QIcon, QPainter, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -14,7 +16,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.anchors import is_anchor_text, references_in_text
-from app.models.annotation_model import ANNOTATION_COLORS, AnnotationModel
+from app.models.annotation_model import ANNOTATION_COLORS, QUICK_HIGHLIGHT_COLORS, AnnotationModel
 
 
 class AnnotationPropertiesWidget(QWidget):
@@ -128,7 +130,7 @@ class AnnotationPropertiesWidget(QWidget):
         default_highlight_color: tuple[float, float, float],
         default_highlight_opacity: float,
     ) -> None:
-        color_combo = self.create_color_combo(model.color, "Yellow")
+        color_combo = self.create_highlight_color_combo(model.color, "Yellow")
         opacity_spin = QSpinBox()
         self.constrain_field_width(opacity_spin)
         opacity_spin.setRange(5, 100)
@@ -148,7 +150,9 @@ class AnnotationPropertiesWidget(QWidget):
         def apply() -> None:
             if self.updating:
                 return
-            color = ANNOTATION_COLORS[color_combo.currentText()]
+            color = color_combo.currentData(Qt.ItemDataRole.UserRole)
+            if color is None:
+                color = QUICK_HIGHLIGHT_COLORS["Yellow"]
             opacity = opacity_spin.value() / 100
             self.on_highlight_change(color, opacity)
             if default_check.isChecked():
@@ -157,6 +161,31 @@ class AnnotationPropertiesWidget(QWidget):
         color_combo.currentTextChanged.connect(lambda _text: apply())
         opacity_spin.valueChanged.connect(lambda _value: apply())
         default_check.toggled.connect(lambda checked: apply() if checked else None)
+
+    def create_highlight_color_combo(self, color: tuple | None, fallback_name: str) -> QComboBox:
+        combo = QComboBox()
+        self.constrain_field_width(combo)
+        combo.setIconSize(QPixmap(28, 14).size())
+        combo.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        combo.setMinimumContentsLength(8)
+        selected_name = self.highlight_standard_color_name(color) if color else fallback_name
+        if color is not None and selected_name is None:
+            custom_color = tuple(float(value) for value in color[:3])
+            combo.addItem(self.color_icon(custom_color), "Custom", custom_color)
+            selected_name = "Custom"
+        for name, value in QUICK_HIGHLIGHT_COLORS.items():
+            combo.addItem(self.color_icon(value), name, value)
+        combo.setCurrentText(selected_name or fallback_name)
+        return combo
+
+    def color_icon(self, color: tuple[float, float, float]) -> QIcon:
+        pixmap = QPixmap(28, 14)
+        red, green, blue = (max(0, min(255, int(round(channel * 255)))) for channel in color[:3])
+        pixmap.fill(Qt.GlobalColor.transparent)
+        painter = QPainter(pixmap)
+        painter.fillRect(1, 1, 26, 12, QColor(red, green, blue))
+        painter.end()
+        return QIcon(pixmap)
 
     def populate_freetext_properties(
         self,
@@ -279,6 +308,30 @@ class AnnotationPropertiesWidget(QWidget):
         best_name = "Red"
         best_distance = float("inf")
         for name, candidate in ANNOTATION_COLORS.items():
+            distance = sum((float(color[index]) - candidate[index]) ** 2 for index in range(3))
+            if distance < best_distance:
+                best_name = name
+                best_distance = distance
+        return best_name
+
+    def highlight_standard_color_name(self, color: tuple | None) -> str | None:
+        if not color:
+            return None
+        for name, candidate in QUICK_HIGHLIGHT_COLORS.items():
+            distance = sum((float(color[index]) - candidate[index]) ** 2 for index in range(3))
+            if distance <= 0.0001:
+                return name
+        return None
+
+    def highlight_color_name_for_tuple(self, color: tuple | None) -> str:
+        if not color:
+            return "Yellow"
+        standard_name = self.highlight_standard_color_name(color)
+        if standard_name is not None:
+            return standard_name
+        best_name = "Yellow"
+        best_distance = float("inf")
+        for name, candidate in QUICK_HIGHLIGHT_COLORS.items():
             distance = sum((float(color[index]) - candidate[index]) ** 2 for index in range(3))
             if distance < best_distance:
                 best_name = name

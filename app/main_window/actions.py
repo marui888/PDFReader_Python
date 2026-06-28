@@ -1,7 +1,34 @@
 from __future__ import annotations
 
+from PySide6.QtCore import QSize
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QLabel, QSpinBox, QToolBar
+from PySide6.QtWidgets import QLabel, QSpinBox, QToolBar, QToolButton
+
+from app.models.annotation_model import QUICK_HIGHLIGHT_COLORS
+
+
+def set_quick_highlight_button_style(button: QToolButton, color: tuple[float, float, float], opacity_percent: int) -> None:
+    red, green, blue = (max(0, min(255, int(round(channel * 255)))) for channel in color)
+    alpha = max(0, min(255, int(round(opacity_percent / 100 * 255))))
+    button.setStyleSheet(
+        "QToolButton {"
+        f"background-color: rgba({red}, {green}, {blue}, {alpha});"
+        "border: 1px solid #505050;"
+        "padding: 0px;"
+        "margin-right: 2px;"
+        "}"
+    )
+
+
+def refresh_quick_highlight_button_styles(window) -> None:
+    opacity_percent = window.quick_highlight_opacity_spin.value()
+    for button, color in window.quick_highlight_color_buttons:
+        set_quick_highlight_button_style(button, color, opacity_percent)
+
+
+def on_quick_highlight_opacity_changed(window, value: int) -> None:
+    window.default_highlight_opacity = max(0.0, min(1.0, value / 100))
+    refresh_quick_highlight_button_styles(window)
 
 
 def create_actions(window) -> None:
@@ -64,21 +91,39 @@ def create_actions(window) -> None:
     window.zoom_in_action = QAction("Zoom +", window)
     window.zoom_in_action.triggered.connect(window.zoom_in)
 
-    window.add_typewriter_action = QAction("Add FreeText", window)
+    window.add_typewriter_action = QAction("FreeText", window)
     window.add_typewriter_action.setCheckable(True)
     window.add_typewriter_action.triggered.connect(window.add_typewriter)
 
-    window.add_rectangle_action = QAction("Add Square", window)
+    window.add_rectangle_action = QAction("Square", window)
     window.add_rectangle_action.setCheckable(True)
     window.add_rectangle_action.triggered.connect(window.add_rectangle)
 
-    window.add_highlight_action = QAction("Add Highlight", window)
+    window.add_highlight_action = QAction("Highlight", window)
     window.add_highlight_action.setCheckable(True)
     window.add_highlight_action.triggered.connect(window.add_highlight)
 
-    window.add_arrow_action = QAction("Add Arrow", window)
+    window.add_arrow_action = QAction("Arrow", window)
     window.add_arrow_action.setCheckable(True)
     window.add_arrow_action.triggered.connect(window.add_arrow)
+
+    window.quick_highlight_opacity_spin = QSpinBox()
+    window.quick_highlight_opacity_spin.setRange(0, 100)
+    window.quick_highlight_opacity_spin.setValue(round(window.default_highlight_opacity * 100))
+    window.quick_highlight_opacity_spin.setFixedWidth(70)
+    window.quick_highlight_opacity_spin.setMinimumHeight(22)
+    window.quick_highlight_opacity_spin.setToolTip("Highlight opacity 0-100")
+    window.quick_highlight_opacity_spin.valueChanged.connect(
+        lambda value: on_quick_highlight_opacity_changed(window, value)
+    )
+    window.quick_highlight_color_buttons = []
+    for name, color in QUICK_HIGHLIGHT_COLORS.items():
+        button = QToolButton(window)
+        button.setToolTip(name)
+        button.setFixedSize(QSize(18, 18))
+        set_quick_highlight_button_style(button, color, window.quick_highlight_opacity_spin.value())
+        button.clicked.connect(lambda checked=False, selected_color=color: window.apply_quick_highlight_color(selected_color))
+        window.quick_highlight_color_buttons.append((button, color))
 
     window.show_annotations_action = QAction("Annotations", window)
     window.show_annotations_action.triggered.connect(window.show_current_page_annotations)
@@ -192,6 +237,13 @@ def create_toolbar(window) -> None:
     toolbar.addAction(window.add_rectangle_action)
     toolbar.addAction(window.add_highlight_action)
     toolbar.addAction(window.add_arrow_action)
+
+    toolbar.addSeparator()
+    toolbar.addWidget(QLabel("HL"))
+    for button, _color in window.quick_highlight_color_buttons:
+        toolbar.addWidget(button)
+    toolbar.addWidget(QLabel("Op"))
+    toolbar.addWidget(window.quick_highlight_opacity_spin)
 
 
 def update_actions(window) -> None:

@@ -118,6 +118,8 @@ class CanvasController:
         window = self.window
         if getattr(window, "inline_freetext_editor", None) is not None:
             window.inline_freetext_editor.cancel()
+        if hasattr(window.annotation_controller, "clear_text_selection"):
+            window.annotation_controller.clear_text_selection()
         window.clear_selection_items()
         for item in window.annotation_items:
             window.scene.removeItem(item)

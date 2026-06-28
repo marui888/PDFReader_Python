@@ -35,15 +35,37 @@ class AnnotationController:
 
     def annotation_hit_at_scene_pos(self, scene_pos) -> tuple[str, str | None] | None:
         window = self.window
+        candidates: list[tuple[int, int, str, str | None]] = []
         for item in window.scene.items(scene_pos):
-            annotation_id = item.data(0)
+            item_role = item.data(2)
+            annotation_id = item.data(3) if item_role in {"resize-handle", "arrow-endpoint-handle"} else item.data(0)
             if not annotation_id:
                 continue
-            item_role = item.data(2)
             if item_role in {"selection-rect"}:
                 continue
-            return str(annotation_id), str(item_role) if item_role else None
-        return None
+            model = window.annotation_model_map.get(str(annotation_id))
+            if model is None:
+                continue
+            priority = self.annotation_hit_priority(model, str(item_role) if item_role else None)
+            candidates.append((priority, len(candidates), str(annotation_id), str(item_role) if item_role else None))
+        if not candidates:
+            return None
+        candidates.sort(key=lambda candidate: (-candidate[0], candidate[1]))
+        _priority, _order, annotation_id, item_role = candidates[0]
+        return annotation_id, item_role
+
+    def annotation_hit_priority(self, model: AnnotationModel, item_role: str | None) -> int:
+        if item_role in {"resize-handle", "arrow-endpoint-handle"}:
+            return 1000
+        if model.id == self.window.selected_annotation_id:
+            return 900
+        type_priority = {
+            "freetext": 700,
+            "arrow": 600,
+            "square": 500,
+            "highlight": 100,
+        }
+        return type_priority.get(model.app_type, 0)
 
     def record_delete_undo(self, model: AnnotationModel) -> None:
         window = self.window
@@ -170,21 +192,34 @@ class AnnotationController:
         )
         window.update_actions()
 
-    def on_scene_mouse_press(self, scene_pos) -> None:
+    def on_scene_mouse_press(self, scene_pos) -> bool:
         window = self.window
+        if window.is_inline_freetext_editor_hit(scene_pos):
+            return False
+        if window.confirm_inline_freetext_editor_from_canvas_click(scene_pos):
+            return True
         self.clear_scene_drag_state()
+        if self.prepare_annotation_interaction_at_scene_pos(scene_pos):
+            self.clear_text_selection()
+            return False
+        if window.active_tool is None and self.begin_default_text_selection(scene_pos):
+            return True
+        self.clear_text_selection()
+        return False
 
+    def prepare_annotation_interaction_at_scene_pos(self, scene_pos) -> bool:
+        window = self.window
         hit = self.annotation_hit_at_scene_pos(scene_pos)
         if hit is None:
-            return
+            return False
 
         annotation_id, item_role = hit
         if annotation_id is None:
-            return
+            return False
 
         model = window.annotation_model_map.get(annotation_id)
         if model is None or not model.is_supported:
-            return
+            return False
 
         if annotation_id != window.selected_annotation_id:
             self.select_annotation(annotation_id)
@@ -197,12 +232,57 @@ class AnnotationController:
             window.active_scene_drag_kind = "arrow-endpoint"
         elif window.is_draggable_model(model):
             window.active_scene_drag_kind = "move"
+        return True
 
     def clear_scene_drag_state(self) -> None:
         window = self.window
         window.active_scene_drag_kind = None
         window.active_scene_drag_annotation_id = None
         window.active_scene_drag_start_pos = None
+
+    def begin_default_text_selection(self, scene_pos) -> bool:
+        window = self.window
+        if window.doc is None or not self.is_text_at_scene_pos(scene_pos):
+            return False
+        self.clear_text_selection()
+        self.select_annotation(None)
+        window.text_selection_active = True
+        window.text_selection_start_scene_pos = scene_pos
+        window.statusBar().showMessage("Selecting text")
+        return True
+
+    def clear_text_selection(self) -> None:
+        window = self.window
+        for item in window.text_selection_items:
+            try:
+                window.scene.removeItem(item)
+            except RuntimeError:
+                pass
+        window.text_selection_items.clear()
+        window.text_selection_rects.clear()
+        window.text_selection_active = False
+        window.text_selection_start_scene_pos = None
+
+    def is_text_at_scene_pos(self, scene_pos) -> bool:
+        window = self.window
+        if window.doc is None:
+            return False
+        px, py = window.pdf_point_from_scene_point(scene_pos)
+        try:
+            lines = window.canvas_controller.current_page_text_lines(window.current_page())
+        except Exception:
+            return False
+        margin = 1.5
+        for chars in lines:
+            for char in chars:
+                bbox = fitz.Rect(char["bbox"])
+                if (
+                    bbox.contains(fitz.Point(px, py))
+                    or bbox.contains(fitz.Point(px + margin, py))
+                    or bbox.contains(fitz.Point(px - margin, py))
+                ):
+                    return True
+        return False
 
     def prepare_annotation_drag(self, annotation_id: str) -> None:
         window = self.window
@@ -230,6 +310,14 @@ class AnnotationController:
 
     def on_scene_mouse_release(self, scene_pos=None) -> None:
         window = self.window
+        if window.text_selection_active:
+            self.update_default_text_selection(scene_pos)
+            window.text_selection_active = False
+            window.text_selection_start_scene_pos = None
+            if window.text_selection_items:
+                window.statusBar().showMessage("Text selected")
+            return
+
         if window.doc is None or window.selected_annotation_id is None:
             return
 
@@ -299,6 +387,10 @@ class AnnotationController:
 
     def on_scene_mouse_move(self, scene_pos=None) -> None:
         window = self.window
+        if window.text_selection_active:
+            self.update_default_text_selection(scene_pos)
+            return
+
         if window.selected_annotation_id is None:
             return
 
@@ -367,6 +459,74 @@ class AnnotationController:
             if item.pos() != delta:
                 item.setPos(delta)
 
+    def on_scene_mouse_hover(self, scene_pos) -> None:
+        window = self.window
+        if window.doc is None or window.active_tool is not None:
+            return
+        if self.annotation_hit_at_scene_pos(scene_pos) is not None:
+            return
+        cursor = Qt.CursorShape.IBeamCursor if self.is_text_at_scene_pos(scene_pos) else Qt.CursorShape.ArrowCursor
+        window.view.viewport().setCursor(cursor)
+
+    def update_default_text_selection(self, scene_pos) -> None:
+        window = self.window
+        if window.doc is None or window.text_selection_start_scene_pos is None or scene_pos is None:
+            return
+
+        for item in window.text_selection_items:
+            try:
+                window.scene.removeItem(item)
+            except RuntimeError:
+                pass
+        window.text_selection_items.clear()
+
+        start_pdf = window.pdf_point_from_scene_point(window.text_selection_start_scene_pos)
+        end_pdf = window.pdf_point_from_scene_point(scene_pos)
+        rects = window.highlight_rects_from_text_flow(window.current_page(), start_pdf, end_pdf)
+        window.text_selection_rects = [fitz.Rect(rect) for rect in rects]
+        brush = QBrush(QColor(120, 120, 120, 95))
+        for rect in rects:
+            item = window.scene.addRect(window.scene_rect(rect), QPen(Qt.PenStyle.NoPen), brush)
+            item.setZValue(28)
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            window.text_selection_items.append(item)
+
+    def apply_quick_highlight_color(self, color: tuple[float, float, float], opacity: float) -> None:
+        window = self.window
+        opacity = max(0.0, min(1.0, float(opacity)))
+        if window.doc is not None and window.text_selection_rects:
+            try:
+                annot = PdfAnnotationWriter(window.doc).add_highlight_annotation(
+                    window.current_page(),
+                    [fitz.Rect(rect) for rect in window.text_selection_rects],
+                    color,
+                    opacity,
+                )
+                window.mark_dirty()
+                self.clear_text_selection()
+                self.refresh_overlay_and_select_annotation_by_xref(annot.xref)
+                window.statusBar().showMessage(f"Added Highlight xref={annot.xref}. Use Save to persist.")
+            except Exception as exc:
+                window.show_error("Add Highlight failed", exc)
+            return
+
+        model = window.annotation_model_map.get(window.selected_annotation_id) if window.selected_annotation_id else None
+        if window.doc is not None and model is not None and model.app_type == "highlight":
+            try:
+                self.update_highlight_annotation(model, color, opacity)
+                window.mark_dirty()
+                window.refresh_annotation_overlay(preserve_selection=True)
+                window.statusBar().showMessage(f"Edited Highlight xref={model.xref}. Use Save to persist.")
+            except Exception as exc:
+                window.refresh_annotation_overlay(preserve_selection=True)
+                window.show_error("Edit Highlight failed", exc)
+            return
+
+        window.default_highlight_color = color
+        window.default_highlight_opacity = opacity
+        window.save_app_settings()
+        window.statusBar().showMessage("Default highlight color updated.")
+
     def resized_scene_rect_preview(
         self,
         model: AnnotationModel,
@@ -414,6 +574,8 @@ class AnnotationController:
     def set_active_tool(self, tool: str | None) -> None:
         window = self.window
         self.remove_tool_preview()
+        if tool is not None:
+            self.clear_text_selection()
         window.active_tool = tool
         window.tool_start_scene_pos = None
         window.add_typewriter_action.setChecked(tool == "freetext")
@@ -441,6 +603,17 @@ class AnnotationController:
         window = self.window
         if window.active_tool is None or window.doc is None:
             return False
+        if window.is_inline_freetext_editor_hit(scene_pos):
+            return False
+        if window.confirm_inline_freetext_editor_from_canvas_click(scene_pos):
+            return True
+        if self.annotation_hit_at_scene_pos(scene_pos) is not None:
+            return False
+        if window.selected_annotation_id is not None and window.active_tool in {"freetext", "square", "arrow"}:
+            selected_model = window.annotation_model_map.get(window.selected_annotation_id)
+            if selected_model is not None and selected_model.app_type == window.active_tool:
+                self.select_annotation(None)
+                return True
         window.clear_selection_items()
         start = window.clamp_scene_pos_to_page(scene_pos)
         if window.active_tool == "freetext":
