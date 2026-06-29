@@ -119,7 +119,7 @@ class AnnotationScene(QGraphicsScene):
         self.owner = owner
 
     def mousePressEvent(self, event) -> None:
-        if self.owner.on_tool_mouse_press(event.scenePos()):
+        if self.owner.on_tool_mouse_press(event.scenePos(), event.button()):
             return
         if event.button() == Qt.MouseButton.LeftButton:
             if self.owner.on_scene_mouse_press(event.scenePos()):
@@ -146,8 +146,9 @@ class AnnotationScene(QGraphicsScene):
         if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
             super().mouseDoubleClickEvent(event)
             return
+        if self.owner.on_scene_mouse_double_click(event.scenePos()):
+            return
         super().mouseDoubleClickEvent(event)
-        self.owner.on_scene_mouse_double_click(event.scenePos())
 
     def contextMenuEvent(self, event) -> None:
         if self.owner.is_inline_freetext_editor_hit(event.scenePos()):

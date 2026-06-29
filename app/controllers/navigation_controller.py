@@ -64,6 +64,7 @@ class NavigationController:
         window.page_index = target_index
         window.cancel_add_tool()
         window.render_page()
+        window.defer_scroll_to_page_top_left()
         window.update_current_recent_page()
         window.save_active_session_state()
 
@@ -79,7 +80,9 @@ class NavigationController:
         window.page_index = target_index
         window.cancel_add_tool()
         window.render_page()
-        window.select_annotation_by_xref(int(xref))
+        selected = window.select_annotation_by_xref(int(xref), render_page=False)
+        if not selected:
+            window.defer_scroll_to_page_top_left()
         window.update_current_recent_page()
         window.save_active_session_state()
 

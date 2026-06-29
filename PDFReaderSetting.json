@@ -1,11 +1,11 @@
 {
   "default_freetext_font_size": 12,
   "default_highlight_color": [
-    1.0,
-    0.0,
-    0.0
+    0.45,
+    0.25,
+    0.08
   ],
-  "default_highlight_opacity": 0.54,
+  "default_highlight_opacity": 0.31,
   "extract_highlight_text_on_reindex": true,
   "freetext_font_size_min": 7,
   "freetext_font_size_max": 31,
@@ -13,14 +13,14 @@
   "qpdf_bin_dir": "D:\\tools\\qpdf-12.3.2-msvc64\\bin",
   "recent_files": [
     {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
-      "last_page_index": 243,
-      "last_opened_at": "2026-06-29T07:45:51+08:00"
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
+      "last_page_index": 24,
+      "last_opened_at": "2026-06-29T16:45:22+08:00"
     },
     {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
-      "last_page_index": 27,
-      "last_opened_at": "2026-06-29T07:24:26+08:00"
+      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
+      "last_page_index": 109,
+      "last_opened_at": "2026-06-29T16:43:38+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\\u9ad8\u4e2d\u6570\u5b66\u4e4b\u65c520260208.pdf",
@@ -63,6 +63,21 @@
   ],
   "save_incremental_safety_default": false,
   "search_page_size": 400,
+  "shortcuts": {
+    "highlight_color_1": "Alt+Shift+A",
+    "highlight_color_2": "Alt+Shift+S",
+    "highlight_color_3": "Alt+Shift+D",
+    "highlight_color_4": "Alt+Shift+Z",
+    "highlight_color_5": "Alt+Shift+X",
+    "highlight_color_6": "Alt+Shift+C",
+    "tool_square": "Alt+G",
+    "tool_arrow": "Alt+R",
+    "tool_highlight": "Alt+S",
+    "tool_freetext": "Alt+F",
+    "tool_text": "Alt+T",
+    "close_pdf": "Ctrl+W",
+    "save_incremental": "Ctrl+S"
+  },
   "use_foxit_freetext": false,
   "use_popup_freetext_input": false
 }

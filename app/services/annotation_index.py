@@ -9,6 +9,7 @@ import pymupdf as fitz
 
 from app.repositories.annotation_repository import AnnotationRepository
 from app.search.annotation_search_query import AnnotationSearchQuery
+from app.services.pdf_text_extract import highlight_selected_text
 
 
 @dataclass
@@ -470,27 +471,7 @@ class AnnotationIndex:
         return " | ".join(parts) if parts else text
 
     def highlight_selected_text(self, page: fitz.Page, model) -> str:
-        if model.app_type != "highlight":
-            return ""
-
-        polygons = self.highlight_quad_polygons(model)
-        fallback_rect = fitz.Rect(model.rect) if not polygons else None
-        freetext_rects = self.page_freetext_rects(page)
-        lines = self.page_text_lines(page)
-
-        selected_lines: list[str] = []
-        for line in lines:
-            chars: list[str] = []
-            for char in line:
-                center = self.rect_center(char["bbox"])
-                if self.point_in_any_rect(center, freetext_rects):
-                    continue
-                if self.point_in_highlight_area(center, polygons, fallback_rect):
-                    chars.append(char["text"])
-            text = "".join(chars).strip()
-            if text:
-                selected_lines.append(text)
-        return " ".join(" ".join(selected_lines).split())
+        return highlight_selected_text(page, model)
 
     def highlight_quad_polygons(self, model) -> list[list[tuple[float, float]]]:
         polygons: list[list[tuple[float, float]]] = []

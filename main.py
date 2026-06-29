@@ -38,8 +38,9 @@ from app.services.pdf_audit import audit_document_summary as run_audit_document_
 from app.services.pdf_audit import format_audit_report
 from app.services.pdf_annotation_writer import PdfAnnotationWriter
 from app.services.settings import AppSettings, load_settings, save_settings, settings_path
+from app.services.shortcuts import apply_shortcuts as apply_window_shortcuts
 from app.models.undo import UndoAction
-from PySide6.QtCore import QPointF, QRectF, Qt, QThread, Slot
+from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
@@ -79,6 +80,8 @@ class MainWindow(QMainWindow):
         self.keyword_groups = load_keyword_groups(self.keyword_metadata_dir())
         self.recent_files: list[dict] = []
         self.recent_search_rule_files: list[str] = []
+        self.shortcuts: dict[str, str] = {}
+        self.shortcut_objects: list[object] = []
         self.max_recent_files = 10
         self.debug_log: list[str] = []
         self.annotation_index = AnnotationIndex(self.index_path())
@@ -201,6 +204,7 @@ class MainWindow(QMainWindow):
         self.create_actions()
         self.create_menus()
         self.create_toolbar()
+        self.apply_shortcuts()
         self.show_current_page_annotations()
         self.update_actions()
 
@@ -574,6 +578,7 @@ class MainWindow(QMainWindow):
         self.page_index = target_index
         self.cancel_add_tool()
         self.render_page()
+        self.defer_scroll_to_page_top_left()
         self.update_current_recent_page()
         self.save_active_session_state()
 
@@ -616,6 +621,7 @@ class MainWindow(QMainWindow):
         self.search_page_size = settings.search_page_size
         self.recent_files = settings.recent_files
         self.recent_search_rule_files = settings.recent_search_rule_files
+        self.shortcuts = settings.shortcuts
 
     def save_app_settings(self) -> None:
         settings = AppSettings(
@@ -633,8 +639,12 @@ class MainWindow(QMainWindow):
             search_page_size=self.search_page_size,
             recent_files=self.recent_files,
             recent_search_rule_files=self.recent_search_rule_files,
+            shortcuts=self.shortcuts,
         )
         save_settings(self.settings_path(), settings)
+
+    def apply_shortcuts(self) -> None:
+        apply_window_shortcuts(self)
 
     def update_recent_search_rule_files(self, recent_files: list[str]) -> None:
         self.recent_search_rule_files = list(recent_files)[: self.max_recent_files]
@@ -660,6 +670,20 @@ class MainWindow(QMainWindow):
 
     def render_page(self, preserve_selection: bool = False, keep_view_position: bool = False) -> None:
         self.canvas_controller.render_page(preserve_selection, keep_view_position)
+
+    def defer_scroll_to_page_top_left(self) -> None:
+        QTimer.singleShot(0, self.scroll_to_page_top_left)
+
+    def defer_scroll_to_page_bottom_left(self) -> None:
+        QTimer.singleShot(0, self.scroll_to_page_bottom_left)
+
+    def scroll_to_page_top_left(self) -> None:
+        self.view.horizontalScrollBar().setValue(self.view.horizontalScrollBar().minimum())
+        self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().minimum())
+
+    def scroll_to_page_bottom_left(self) -> None:
+        self.view.horizontalScrollBar().setValue(self.view.horizontalScrollBar().minimum())
+        self.view.verticalScrollBar().setValue(self.view.verticalScrollBar().maximum())
 
     def show_scroll_boundary_status(self, direction: str) -> None:
         main_window_view.show_scroll_boundary_status(self, direction)
@@ -775,16 +799,8 @@ class MainWindow(QMainWindow):
     ) -> QRectF:
         return self.annotation_controller.resized_scene_rect_preview(model, handle, dx_pdf, dy_pdf)
 
-    def on_scene_mouse_double_click(self, scene_pos: QPointF | None = None) -> None:
-        if self.selected_annotation_id is None:
-            return
-        if (
-            not self.use_popup_freetext_input
-            and scene_pos is not None
-            and self.begin_inline_edit_for_selected_freetext(scene_pos)
-        ):
-            return
-        self.show_annotation_properties()
+    def on_scene_mouse_double_click(self, scene_pos: QPointF | None = None) -> bool:
+        return self.annotation_controller.on_scene_mouse_double_click(scene_pos)
 
     def move_pdf_annotation(self, model: AnnotationModel, dx: float, dy: float) -> None:
         if self.doc is None:
@@ -913,6 +929,9 @@ class MainWindow(QMainWindow):
     def apply_quick_highlight_color(self, color: tuple[float, float, float]) -> None:
         opacity = self.quick_highlight_opacity_spin.value() / 100 if hasattr(self, "quick_highlight_opacity_spin") else 1
         self.annotation_controller.apply_quick_highlight_color(color, opacity)
+
+    def set_default_highlight_color(self, color: tuple[float, float, float]) -> None:
+        self.annotation_controller.set_default_highlight_color(color)
 
     def update_stroked_annotation(self, model: AnnotationModel, color: tuple[float, float, float], width: int) -> None:
         self.annotation_controller.update_stroked_annotation(model, color, width)
@@ -1288,11 +1307,12 @@ class MainWindow(QMainWindow):
         self.page_index = max(0, min(page_index, len(self.doc) - 1))
         self.render_page()
         self.update_current_recent_page()
-        selected = self.select_annotation_by_xref(xref)
+        selected = self.select_annotation_by_xref(xref, render_page=False)
         if selected:
             self.statusBar().showMessage(f"Jumped to FreeText result on page {self.page_index + 1}.")
             self.log_debug(f"Batch FreeText jumped: page={self.page_index + 1} xref={xref}")
         else:
+            self.defer_scroll_to_page_top_left()
             main_window_dialogs.show_warning(
                 self,
                 "Batch FreeText",
@@ -1520,11 +1540,14 @@ class MainWindow(QMainWindow):
     def annotation_note(self, model: AnnotationModel) -> str:
         return self.annotation_controller.annotation_note(model)
 
-    def select_annotation_by_xref(self, xref: int) -> bool:
-        return self.annotation_controller.select_annotation_by_xref(xref)
+    def select_annotation_by_xref(self, xref: int, render_page: bool = True) -> bool:
+        return self.annotation_controller.select_annotation_by_xref(xref, render_page)
 
     def begin_add_tool(self, tool: str) -> None:
         self.annotation_controller.begin_add_tool(tool)
+
+    def activate_text_mode(self) -> None:
+        self.annotation_controller.activate_text_mode()
 
     def set_active_tool(self, tool: str | None) -> None:
         self.annotation_controller.set_active_tool(tool)
@@ -1704,8 +1727,8 @@ class MainWindow(QMainWindow):
             item.setVisible(True)
         self.hidden_inline_freetext_annotation_id = None
 
-    def on_tool_mouse_press(self, scene_pos: QPointF) -> bool:
-        return self.annotation_controller.on_tool_mouse_press(scene_pos)
+    def on_tool_mouse_press(self, scene_pos: QPointF, button=None) -> bool:
+        return self.annotation_controller.on_tool_mouse_press(scene_pos, button)
 
     def on_tool_mouse_move(self, scene_pos: QPointF) -> bool:
         return self.annotation_controller.on_tool_mouse_move(scene_pos)
@@ -1872,6 +1895,7 @@ class MainWindow(QMainWindow):
         self.cancel_add_tool()
         self.page_index -= 1
         self.render_page()
+        self.defer_scroll_to_page_bottom_left()
         self.update_current_recent_page()
         self.save_active_session_state()
 
@@ -1882,6 +1906,7 @@ class MainWindow(QMainWindow):
         self.cancel_add_tool()
         self.page_index += 1
         self.render_page()
+        self.defer_scroll_to_page_top_left()
         self.update_current_recent_page()
         self.save_active_session_state()
 
@@ -1900,6 +1925,13 @@ class MainWindow(QMainWindow):
 
     def keyPressEvent(self, event) -> None:
         if (
+            event.key() == Qt.Key.Key_C
+            and event.modifiers() & Qt.KeyboardModifier.ControlModifier
+            and self.copy_selected_pdf_text_to_clipboard()
+        ):
+            event.accept()
+            return
+        if (
             event.key() == Qt.Key.Key_Escape
             and self.inline_freetext_editor is not None
             and self.inline_freetext_editor.is_active()
@@ -1913,6 +1945,9 @@ class MainWindow(QMainWindow):
             event.accept()
             return
         super().keyPressEvent(event)
+
+    def copy_selected_pdf_text_to_clipboard(self) -> bool:
+        return self.annotation_controller.copy_selected_pdf_text_to_clipboard()
 
     def closeEvent(self, event) -> None:
         if not self.confirm_all_unsaved_for_exit():
@@ -1942,10 +1977,15 @@ def set_windows_app_user_model_id() -> None:
         pass
 
 
+def resource_path(relative_path: str) -> Path:
+    base_path = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
+    return base_path / relative_path
+
+
 def main() -> int:
     set_windows_app_user_model_id()
     app = QApplication(sys.argv)
-    icon_path = Path(__file__).with_name("assets") / "app_icon.ico"
+    icon_path = resource_path("assets/app_icon.ico")
     if icon_path.exists():
         app.setWindowIcon(QIcon(str(icon_path)))
     window = MainWindow()

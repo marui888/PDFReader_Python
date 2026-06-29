@@ -3,14 +3,15 @@ from __future__ import annotations
 import pymupdf as fitz
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
 from PySide6.QtGui import QBrush, QColor, QPen
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsRectItem, QInputDialog, QMenu
+from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsRectItem, QInputDialog, QMenu
 
 from app.main_window import dialogs as main_window_dialogs
 from app.canvas.annotation_interaction import AnnotationInteractionController
 from app.canvas.annotation_selection import AnnotationSelectionRenderer
 from app.anchors import is_anchor_text, references_in_text
-from app.models.annotation_model import ANNOTATION_COLORS, AnnotationModel
+from app.models.annotation_model import ANNOTATION_COLORS, QUICK_HIGHLIGHT_COLORS, AnnotationModel
 from app.services.pdf_annotation_writer import PdfAnnotationWriter
+from app.services.pdf_text_extract import highlight_selected_text, selected_text_from_rects
 from app.models.undo import UndoAction
 
 
@@ -88,6 +89,27 @@ class AnnotationController:
         )
         window.update_actions()
 
+    def record_property_undo(self, label: str, model: AnnotationModel) -> None:
+        window = self.window
+        window.undo_action = UndoAction(
+            label=label,
+            operation="property",
+            page_index=model.page_index,
+            xref=model.xref,
+            app_type=model.app_type,
+            rect=fitz.Rect(model.rect),
+            text=model.text,
+            color=model.color,
+            border_width=model.border_width,
+            font_size=model.font_size,
+            opacity=model.opacity,
+            quad_points=list(model.quad_points),
+            line_start=model.line_start,
+            line_end=model.line_end,
+            line_ending=model.line_ending,
+        )
+        window.update_actions()
+
     def undo_last_action(self) -> None:
         window = self.window
         if window.doc is None or window.undo_action is None:
@@ -95,12 +117,14 @@ class AnnotationController:
 
         action = window.undo_action
         try:
+            window.page_index = max(0, min(action.page_index, len(window.doc) - 1))
             if action.operation == "delete":
                 restored_xref = self.restore_deleted_annotation(action)
+            elif action.operation == "property":
+                restored_xref = self.restore_annotation_property(action)
             else:
                 restored_xref = window.restore_undo_action(action)
             window.undo_action = None
-            window.page_index = max(0, min(action.page_index, len(window.doc) - 1))
             window.mark_dirty()
             window.refresh_annotation_overlay(preserve_selection=True)
             if restored_xref is not None:
@@ -109,6 +133,42 @@ class AnnotationController:
             window.update_actions()
         except Exception as exc:
             window.show_error("Undo failed", exc)
+
+    def restore_annotation_property(self, action: UndoAction) -> int | None:
+        window = self.window
+        if not window.current_annotations or window.page_index != action.page_index:
+            window.current_annotations = window.load_page_annotations(action.page_index)
+        model = None
+        for candidate in window.current_annotations:
+            if candidate.xref == action.xref:
+                model = candidate
+                break
+        if model is None:
+            raise RuntimeError("The annotation to undo was not found.")
+
+        if action.app_type == "freetext":
+            self.update_freetext_annotation_on_page(
+                action.page_index,
+                model,
+                action.text,
+                int(round(action.font_size or window.default_freetext_font_size)),
+                action.color or (1, 0, 0),
+            )
+        elif action.app_type == "highlight":
+            self.update_highlight_annotation(
+                model,
+                action.color or window.default_highlight_color,
+                action.opacity if action.opacity is not None else window.default_highlight_opacity,
+            )
+        elif action.app_type in {"square", "arrow"}:
+            self.update_stroked_annotation(
+                model,
+                action.color or (1, 0, 0),
+                int(round(action.border_width or 1)),
+            )
+        else:
+            raise RuntimeError(f"Property undo is not supported for annotation type: {action.app_type}")
+        return action.xref
 
     def restore_deleted_annotation(self, action: UndoAction) -> int:
         window = self.window
@@ -473,6 +533,13 @@ class AnnotationController:
         if window.doc is None or window.text_selection_start_scene_pos is None or scene_pos is None:
             return
 
+        start_pdf = window.pdf_point_from_scene_point(window.text_selection_start_scene_pos)
+        end_pdf = window.pdf_point_from_scene_point(scene_pos)
+        rects = window.highlight_rects_from_text_flow(window.current_page(), start_pdf, end_pdf)
+        self.replace_text_selection_rects(rects)
+
+    def replace_text_selection_rects(self, rects: list[fitz.Rect]) -> None:
+        window = self.window
         for item in window.text_selection_items:
             try:
                 window.scene.removeItem(item)
@@ -480,9 +547,6 @@ class AnnotationController:
                 pass
         window.text_selection_items.clear()
 
-        start_pdf = window.pdf_point_from_scene_point(window.text_selection_start_scene_pos)
-        end_pdf = window.pdf_point_from_scene_point(scene_pos)
-        rects = window.highlight_rects_from_text_flow(window.current_page(), start_pdf, end_pdf)
         window.text_selection_rects = [fitz.Rect(rect) for rect in rects]
         brush = QBrush(QColor(120, 120, 120, 95))
         for rect in rects:
@@ -490,6 +554,159 @@ class AnnotationController:
             item.setZValue(28)
             item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
             window.text_selection_items.append(item)
+
+    def on_scene_mouse_double_click(self, scene_pos) -> bool:
+        window = self.window
+        if scene_pos is None:
+            return False
+
+        if window.active_tool == "highlight":
+            if self.add_highlight_for_word_at_scene_pos(scene_pos):
+                return True
+            window.statusBar().showMessage("No word found at double-click position.")
+            return True
+
+        if window.active_tool is None and self.should_text_double_click_select_word(scene_pos):
+            if self.select_word_at_scene_pos(scene_pos):
+                return True
+
+        if window.selected_annotation_id is None:
+            return False
+        if not window.use_popup_freetext_input and window.begin_inline_edit_for_selected_freetext(scene_pos):
+            return True
+        window.show_annotation_properties()
+        return True
+
+    def should_text_double_click_select_word(self, scene_pos) -> bool:
+        hit = self.annotation_hit_at_scene_pos(scene_pos)
+        if hit is None:
+            return True
+        annotation_id, _item_role = hit
+        model = self.window.annotation_model_map.get(annotation_id)
+        return model is not None and model.app_type == "highlight"
+
+    def select_word_at_scene_pos(self, scene_pos) -> bool:
+        rects = self.word_rects_at_scene_pos(scene_pos)
+        if not rects:
+            return False
+        self.clear_text_selection()
+        self.replace_text_selection_rects(rects)
+        self.window.statusBar().showMessage("Word selected")
+        return True
+
+    def add_highlight_for_word_at_scene_pos(self, scene_pos) -> bool:
+        window = self.window
+        if window.doc is None:
+            return False
+        rects = self.word_rects_at_scene_pos(scene_pos)
+        if not rects:
+            return False
+        try:
+            annot = PdfAnnotationWriter(window.doc).add_highlight_annotation(
+                window.current_page(),
+                [fitz.Rect(rect) for rect in rects],
+                window.default_highlight_color,
+                window.default_highlight_opacity,
+            )
+            window.mark_dirty()
+            self.record_add_undo("Add Highlight", window.page_index, annot.xref)
+            self.refresh_overlay_and_select_annotation_by_xref(annot.xref, center_on=False)
+            self.set_active_tool("highlight")
+            window.statusBar().showMessage(f"Added Highlight xref={annot.xref}. Use Save to persist.")
+            return True
+        except Exception as exc:
+            window.show_error("Add Highlight failed", exc)
+            return True
+
+    def word_rects_at_scene_pos(self, scene_pos) -> list[fitz.Rect]:
+        window = self.window
+        if window.doc is None:
+            return []
+
+        px, py = window.pdf_point_from_scene_point(scene_pos)
+        try:
+            lines = window.canvas_controller.current_page_text_lines(window.current_page())
+        except Exception:
+            return []
+
+        hit = self.word_char_range_at_pdf_point(lines, px, py)
+        if hit is None:
+            return []
+        line_index, begin, finish = hit
+        chars = lines[line_index][begin:finish]
+        if not chars:
+            return []
+        boxes = [char["bbox"] for char in chars]
+        return [window.canvas_controller.highlight_rect_from_selected_chars(chars, boxes)]
+
+    def word_char_range_at_pdf_point(
+        self, lines: list[list[dict]], px: float, py: float
+    ) -> tuple[int, int, int] | None:
+        for line_index, chars in enumerate(lines):
+            if not chars:
+                continue
+            line_rect = fitz.Rect(chars[0]["bbox"])
+            for char in chars[1:]:
+                line_rect |= char["bbox"]
+            if not line_rect.contains(fitz.Point(px, py)):
+                continue
+
+            char_index = self.char_index_at_pdf_point(chars, px, py)
+            if char_index is None:
+                return None
+            kind = self.word_char_kind(str(chars[char_index].get("text", "")))
+            if kind is None:
+                return None
+
+            begin = char_index
+            while begin > 0 and self.word_char_kind(str(chars[begin - 1].get("text", ""))) == kind:
+                begin -= 1
+
+            finish = char_index + 1
+            while finish < len(chars) and self.word_char_kind(str(chars[finish].get("text", ""))) == kind:
+                finish += 1
+
+            return line_index, begin, finish
+        return None
+
+    def char_index_at_pdf_point(self, chars: list[dict], px: float, py: float) -> int | None:
+        best_index = None
+        best_distance = float("inf")
+        for index, char in enumerate(chars):
+            bbox = fitz.Rect(char["bbox"])
+            if bbox.contains(fitz.Point(px, py)):
+                return index
+            center_x = (bbox.x0 + bbox.x1) / 2
+            center_y = (bbox.y0 + bbox.y1) / 2
+            distance = abs(px - center_x) + abs(py - center_y)
+            if distance < best_distance:
+                best_index = index
+                best_distance = distance
+        return best_index
+
+    def word_char_kind(self, text: str) -> str | None:
+        if not text:
+            return None
+        character = text[0]
+        if self.is_cjk_char(character):
+            return "cjk"
+        if character.isascii() and (character.isalnum() or character in {"_", "'", "-"}):
+            return "latin"
+        return None
+
+    def is_cjk_char(self, character: str) -> bool:
+        if not character:
+            return False
+        codepoint = ord(character)
+        return (
+            0x3400 <= codepoint <= 0x4DBF
+            or 0x4E00 <= codepoint <= 0x9FFF
+            or 0xF900 <= codepoint <= 0xFAFF
+            or 0x20000 <= codepoint <= 0x2A6DF
+            or 0x2A700 <= codepoint <= 0x2B73F
+            or 0x2B740 <= codepoint <= 0x2B81F
+            or 0x2B820 <= codepoint <= 0x2CEAF
+        )
 
     def apply_quick_highlight_color(self, color: tuple[float, float, float], opacity: float) -> None:
         window = self.window
@@ -504,7 +721,7 @@ class AnnotationController:
                 )
                 window.mark_dirty()
                 self.clear_text_selection()
-                self.refresh_overlay_and_select_annotation_by_xref(annot.xref)
+                self.refresh_overlay_and_select_annotation_by_xref(annot.xref, center_on=False)
                 window.statusBar().showMessage(f"Added Highlight xref={annot.xref}. Use Save to persist.")
             except Exception as exc:
                 window.show_error("Add Highlight failed", exc)
@@ -522,10 +739,44 @@ class AnnotationController:
                 window.show_error("Edit Highlight failed", exc)
             return
 
+        window.statusBar().showMessage("Double-click a highlight color button to set the default color.")
+
+    def copy_selected_pdf_text_to_clipboard(self) -> bool:
+        window = self.window
+        if window.doc is None:
+            return False
+
+        text = ""
+        if window.text_selection_rects:
+            text = selected_text_from_rects(window.current_page(), window.text_selection_rects)
+        elif window.selected_annotation_id is not None:
+            model = window.annotation_model_map.get(window.selected_annotation_id)
+            if model is not None and model.app_type == "highlight":
+                text = highlight_selected_text(window.current_page(), model)
+
+        text = self.normalize_copied_text(text)
+        if not text:
+            return False
+
+        QApplication.clipboard().setText(text)
+        window.statusBar().showMessage("Copied text")
+        return True
+
+    def normalize_copied_text(self, text: str) -> str:
+        lines = [line.strip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+        return "\n".join(line for line in lines if line).strip()
+
+    def set_default_highlight_color(self, color: tuple[float, float, float]) -> None:
+        window = self.window
         window.default_highlight_color = color
-        window.default_highlight_opacity = opacity
         window.save_app_settings()
-        window.statusBar().showMessage("Default highlight color updated.")
+        if hasattr(window, "quick_highlight_opacity_spin"):
+            from app.main_window.actions import refresh_quick_highlight_button_styles
+
+            refresh_quick_highlight_button_styles(window)
+        window.statusBar().showMessage(
+            f"Default highlight color updated. Opacity {round(window.default_highlight_opacity * 100)}%."
+        )
 
     def resized_scene_rect_preview(
         self,
@@ -571,6 +822,10 @@ class AnnotationController:
 
         self.set_active_tool(tool)
 
+    def activate_text_mode(self) -> None:
+        self.set_active_tool(None)
+        self.show_page_status()
+
     def set_active_tool(self, tool: str | None) -> None:
         window = self.window
         self.remove_tool_preview()
@@ -578,6 +833,7 @@ class AnnotationController:
             self.clear_text_selection()
         window.active_tool = tool
         window.tool_start_scene_pos = None
+        window.text_mode_action.setChecked(tool is None)
         window.add_typewriter_action.setChecked(tool == "freetext")
         window.add_rectangle_action.setChecked(tool == "square")
         window.add_highlight_action.setChecked(tool == "highlight")
@@ -587,11 +843,17 @@ class AnnotationController:
             window.view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
             return
 
-        window.view.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        if tool == "highlight":
+            window.view.viewport().setCursor(Qt.CursorShape.IBeamCursor)
+        else:
+            window.view.viewport().setCursor(Qt.CursorShape.CrossCursor)
         if tool == "freetext":
             window.statusBar().showMessage("Click on the page to add FreeText. Press Esc to cancel.")
         elif tool == "highlight":
-            window.statusBar().showMessage("Drag over text to add Highlight. Press Esc to cancel.")
+            window.statusBar().showMessage(
+                f"Highlight mode: default opacity {round(window.default_highlight_opacity * 100)}%. "
+                "Drag text or double-click a word."
+            )
         else:
             window.statusBar().showMessage(f"Drag on the page to add {tool}. Press Esc to cancel.")
 
@@ -599,9 +861,11 @@ class AnnotationController:
         self.remove_tool_preview()
         self.set_active_tool(None)
 
-    def on_tool_mouse_press(self, scene_pos) -> bool:
+    def on_tool_mouse_press(self, scene_pos, button=None) -> bool:
         window = self.window
         if window.active_tool is None or window.doc is None:
+            return False
+        if button is not None and button != Qt.MouseButton.LeftButton:
             return False
         if window.is_inline_freetext_editor_hit(scene_pos):
             return False
@@ -714,7 +978,11 @@ class AnnotationController:
         if not rects:
             return
 
-        brush = QBrush(QColor(255, 235, 59, 85))
+        red, green, blue = (
+            max(0, min(255, int(round(channel * 255)))) for channel in window.default_highlight_color[:3]
+        )
+        alpha = max(20, min(255, int(round(window.default_highlight_opacity * 255))))
+        brush = QBrush(QColor(red, green, blue, alpha))
         for rect in rects:
             item = window.scene.addRect(window.scene_rect(rect), QPen(Qt.PenStyle.NoPen), brush)
             item.setZValue(30)
@@ -752,21 +1020,21 @@ class AnnotationController:
             window.use_foxit_freetext,
         )
         window.mark_dirty()
-        self.refresh_overlay_and_select_annotation_by_xref(annot.xref)
+        self.refresh_overlay_and_select_annotation_by_xref(annot.xref, center_on=False)
         return annot.xref
 
     def create_square_annotation(self, rect: fitz.Rect) -> int:
         window = self.window
         annot = PdfAnnotationWriter(window.doc).add_square_annotation(window.current_page(), rect)
         window.mark_dirty()
-        self.refresh_overlay_and_select_annotation_by_xref(annot.xref)
+        self.refresh_overlay_and_select_annotation_by_xref(annot.xref, center_on=False)
         return annot.xref
 
     def create_arrow_annotation(self, start: tuple[float, float], end: tuple[float, float]) -> int:
         window = self.window
         annot = PdfAnnotationWriter(window.doc).add_arrow_annotation(window.current_page(), start, end)
         window.mark_dirty()
-        self.refresh_overlay_and_select_annotation_by_xref(annot.xref)
+        self.refresh_overlay_and_select_annotation_by_xref(annot.xref, center_on=False)
         return annot.xref
 
     def create_highlight_annotation_from_text_flow(
@@ -786,7 +1054,7 @@ class AnnotationController:
             window.default_highlight_opacity,
         )
         window.mark_dirty()
-        self.refresh_overlay_and_select_annotation_by_xref(annot.xref)
+        self.refresh_overlay_and_select_annotation_by_xref(annot.xref, center_on=False)
         return annot.xref
 
     def add_typewriter(self) -> None:
@@ -1135,24 +1403,36 @@ class AnnotationController:
         self.select_annotation(annotation_id)
         menu = QMenu(window)
         reference_actions = {}
+        property_actions = {}
         if model.app_type == "freetext":
             references = list(dict.fromkeys(references_in_text(model.text)))
             if references:
                 references_menu = menu.addMenu("Go to Ref")
                 for reference in references:
                     reference_actions[references_menu.addAction(reference)] = reference
+            self.add_context_freetext_font_size_menu(menu, model, property_actions)
             if is_anchor_text(model.text):
                 serial_action = menu.addAction("Remove Serial Number")
             else:
                 serial_action = menu.addAction("Add Serial Number")
         else:
             serial_action = None
+        if model.app_type in {"square", "arrow"}:
+            self.add_context_color_menu(menu, ANNOTATION_COLORS, property_actions)
+            self.add_context_line_width_menu(menu, model, property_actions)
+        elif model.app_type == "highlight":
+            self.add_context_color_menu(menu, QUICK_HIGHLIGHT_COLORS, property_actions)
         delete_action = menu.addAction("Delete")
         selected_action = menu.exec(screen_pos)
+        if selected_action is None:
+            return
         if selected_action in reference_actions:
             window.go_to_anchor_reference_by_name(reference_actions[selected_action])
             return
-        if selected_action == serial_action:
+        if selected_action in property_actions:
+            property_actions[selected_action]()
+            return
+        if serial_action is not None and selected_action == serial_action:
             if model.app_type == "freetext" and is_anchor_text(model.text):
                 window.remove_serial_number_from_selected_freetext()
             else:
@@ -1161,30 +1441,83 @@ class AnnotationController:
         if selected_action == delete_action:
             self.delete_selected_annotation()
 
+    def add_context_freetext_font_size_menu(self, menu: QMenu, model: AnnotationModel, actions: dict) -> None:
+        font_menu = menu.addMenu("Font Size")
+        for font_size in (7, 9, 10, 12, 14, 16, 18):
+            action = font_menu.addAction(str(font_size))
+            action.setCheckable(True)
+            action.setChecked(round(model.font_size or self.window.default_freetext_font_size) == font_size)
+            actions[action] = lambda selected_size=font_size: self.apply_context_freetext_font_size_change(
+                selected_size
+            )
+
+    def add_context_color_menu(self, menu: QMenu, colors: dict[str, tuple], actions: dict) -> None:
+        color_menu = menu.addMenu("Color")
+        for name, color in colors.items():
+            action = color_menu.addAction(name)
+            actions[action] = lambda selected_color=color: self.apply_context_color_change(selected_color)
+
+    def add_context_line_width_menu(self, menu: QMenu, model: AnnotationModel, actions: dict) -> None:
+        width_menu = menu.addMenu("Line Width")
+        for width in (1, 2, 3, 4, 5):
+            action = width_menu.addAction(str(width))
+            action.setCheckable(True)
+            action.setChecked(round(model.border_width or 1) == width)
+            actions[action] = lambda selected_width=width: self.apply_context_line_width_change(selected_width)
+
+    def apply_context_color_change(self, color: tuple[float, float, float]) -> None:
+        window = self.window
+        model = window.annotation_model_map.get(window.selected_annotation_id) if window.selected_annotation_id else None
+        if model is None:
+            return
+        if model.app_type == "highlight":
+            self.record_property_undo("Edit Highlight Color", model)
+            self.on_highlight_property_change(color, model.opacity if model.opacity is not None else window.default_highlight_opacity)
+        elif model.app_type in {"square", "arrow"}:
+            self.record_property_undo(f"Edit {model.pdf_type} Color", model)
+            self.on_stroked_property_change(color, int(round(model.border_width or 1)))
+
+    def apply_context_line_width_change(self, width: int) -> None:
+        window = self.window
+        model = window.annotation_model_map.get(window.selected_annotation_id) if window.selected_annotation_id else None
+        if model is None or model.app_type not in {"square", "arrow"}:
+            return
+        self.record_property_undo(f"Edit {model.pdf_type} Line Width", model)
+        self.on_stroked_property_change(model.color or (1, 0, 0), width)
+
+    def apply_context_freetext_font_size_change(self, font_size: int) -> None:
+        window = self.window
+        model = window.annotation_model_map.get(window.selected_annotation_id) if window.selected_annotation_id else None
+        if model is None or model.app_type != "freetext":
+            return
+        self.record_property_undo("Edit FreeText Font Size", model)
+        self.on_freetext_property_change(model.text, font_size, model.color or (1, 0, 0))
+
     def find_page_annotation_by_xref(self, page: fitz.Page, xref: int) -> fitz.Annot | None:
         window = self.window
         if window.annotation_repo is None:
             return None
         return window.annotation_repo.find_page_annotation_by_xref(page, xref)
 
-    def select_annotation_by_xref(self, xref: int) -> bool:
+    def select_annotation_by_xref(self, xref: int, render_page: bool = True) -> bool:
         window = self.window
-        window.render_page()
+        if render_page:
+            window.render_page()
         for model in window.current_annotations:
             if model.xref == xref:
                 self.select_annotation(model.id, center_on=True)
                 return True
         return False
 
-    def refresh_overlay_and_select_annotation_by_xref(self, xref: int) -> bool:
+    def refresh_overlay_and_select_annotation_by_xref(self, xref: int, center_on: bool = True) -> bool:
         window = self.window
         window.refresh_annotation_overlay(preserve_selection=False)
-        return self.select_current_overlay_annotation_by_xref(xref)
+        return self.select_current_overlay_annotation_by_xref(xref, center_on)
 
-    def select_current_overlay_annotation_by_xref(self, xref: int) -> bool:
+    def select_current_overlay_annotation_by_xref(self, xref: int, center_on: bool = True) -> bool:
         window = self.window
         for model in window.current_annotations:
             if model.xref == xref:
-                self.select_annotation(model.id, center_on=True)
+                self.select_annotation(model.id, center_on=center_on)
                 return True
         return False

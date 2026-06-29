@@ -290,7 +290,7 @@ class SearchController:
         window.page_index = max(0, min(page_index, len(window.doc) - 1))
         window.render_page()
         window.update_current_recent_page()
-        selected = window.select_annotation_by_xref(xref)
+        selected = window.select_annotation_by_xref(xref, render_page=False)
         if selected:
             location = "new tab" if opened_new_tab else "existing tab"
             window.statusBar().showMessage(f"Jumped to search result on page {window.page_index + 1}.")
@@ -304,4 +304,5 @@ class SearchController:
             "The index may be stale. Reindex this PDF."
         )
         window.statusBar().showMessage(message)
+        window.defer_scroll_to_page_top_left()
         window.log_debug(f"Search result xref not found: {target_path} page={window.page_index + 1} xref={xref}")

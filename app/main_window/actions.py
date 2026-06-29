@@ -1,19 +1,30 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSize
+from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QLabel, QSpinBox, QToolBar, QToolButton
+from PySide6.QtWidgets import QLabel, QMenu, QSpinBox, QToolBar, QToolButton
 
 from app.models.annotation_model import QUICK_HIGHLIGHT_COLORS
 
 
-def set_quick_highlight_button_style(button: QToolButton, color: tuple[float, float, float], opacity_percent: int) -> None:
+def color_tuple_near(left: tuple[float, float, float], right: tuple[float, float, float]) -> bool:
+    return all(abs(float(a) - float(b)) < 0.01 for a, b in zip(left[:3], right[:3]))
+
+
+def set_quick_highlight_button_style(
+    button: QToolButton,
+    color: tuple[float, float, float],
+    opacity_percent: int,
+    is_default: bool = False,
+) -> None:
     red, green, blue = (max(0, min(255, int(round(channel * 255)))) for channel in color)
     alpha = max(0, min(255, int(round(opacity_percent / 100 * 255))))
+    border_width = 3 if is_default else 1
+    border_color = "#111111" if is_default else "#505050"
     button.setStyleSheet(
         "QToolButton {"
         f"background-color: rgba({red}, {green}, {blue}, {alpha});"
-        "border: 1px solid #505050;"
+        f"border: {border_width}px solid {border_color};"
         "padding: 0px;"
         "margin-right: 2px;"
         "}"
@@ -23,12 +34,27 @@ def set_quick_highlight_button_style(button: QToolButton, color: tuple[float, fl
 def refresh_quick_highlight_button_styles(window) -> None:
     opacity_percent = window.quick_highlight_opacity_spin.value()
     for button, color in window.quick_highlight_color_buttons:
-        set_quick_highlight_button_style(button, color, opacity_percent)
+        set_quick_highlight_button_style(
+            button,
+            color,
+            opacity_percent,
+            color_tuple_near(color, window.default_highlight_color),
+        )
 
 
 def on_quick_highlight_opacity_changed(window, value: int) -> None:
     window.default_highlight_opacity = max(0.0, min(1.0, value / 100))
+    window.save_app_settings()
     refresh_quick_highlight_button_styles(window)
+    window.statusBar().showMessage(f"Default highlight opacity: {value}%")
+
+
+def show_quick_highlight_color_menu(window, button: QToolButton, color: tuple[float, float, float], pos) -> None:
+    menu = QMenu(button)
+    set_default_action = menu.addAction("Set as Default")
+    selected_action = menu.exec(button.mapToGlobal(pos))
+    if selected_action == set_default_action:
+        window.set_default_highlight_color(color)
 
 
 def create_actions(window) -> None:
@@ -91,6 +117,11 @@ def create_actions(window) -> None:
     window.zoom_in_action = QAction("Zoom +", window)
     window.zoom_in_action.triggered.connect(window.zoom_in)
 
+    window.text_mode_action = QAction("Text", window)
+    window.text_mode_action.setCheckable(True)
+    window.text_mode_action.setChecked(True)
+    window.text_mode_action.triggered.connect(window.activate_text_mode)
+
     window.add_typewriter_action = QAction("FreeText", window)
     window.add_typewriter_action.setCheckable(True)
     window.add_typewriter_action.triggered.connect(window.add_typewriter)
@@ -121,8 +152,22 @@ def create_actions(window) -> None:
         button = QToolButton(window)
         button.setToolTip(name)
         button.setFixedSize(QSize(18, 18))
-        set_quick_highlight_button_style(button, color, window.quick_highlight_opacity_spin.value())
+        button.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        set_quick_highlight_button_style(
+            button,
+            color,
+            window.quick_highlight_opacity_spin.value(),
+            color_tuple_near(color, window.default_highlight_color),
+        )
         button.clicked.connect(lambda checked=False, selected_color=color: window.apply_quick_highlight_color(selected_color))
+        button.customContextMenuRequested.connect(
+            lambda pos, selected_button=button, selected_color=color: show_quick_highlight_color_menu(
+                window,
+                selected_button,
+                selected_color,
+                pos,
+            )
+        )
         window.quick_highlight_color_buttons.append((button, color))
 
     window.show_annotations_action = QAction("Annotations", window)
@@ -233,6 +278,7 @@ def create_toolbar(window) -> None:
 
     toolbar.addSeparator()
 
+    toolbar.addAction(window.text_mode_action)
     toolbar.addAction(window.add_typewriter_action)
     toolbar.addAction(window.add_rectangle_action)
     toolbar.addAction(window.add_highlight_action)
@@ -258,6 +304,7 @@ def update_actions(window) -> None:
         window.next_action,
         window.zoom_out_action,
         window.zoom_in_action,
+        window.text_mode_action,
         window.add_typewriter_action,
         window.add_rectangle_action,
         window.add_highlight_action,

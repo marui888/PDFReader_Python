@@ -100,7 +100,7 @@ class ViewHistoryController:
             window.view.horizontalScrollBar().setValue(location.scroll_x)
             window.view.verticalScrollBar().setValue(location.scroll_y)
             if location.selected_xref is not None:
-                window.select_annotation_by_xref(location.selected_xref)
+                window.select_annotation_by_xref(location.selected_xref, render_page=False)
                 window.view.horizontalScrollBar().setValue(location.scroll_x)
                 window.view.verticalScrollBar().setValue(location.scroll_y)
             window.update_current_recent_page()

@@ -2,6 +2,8 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from app.services.shortcuts import merged_shortcuts
+
 
 @dataclass
 class AppSettings:
@@ -19,6 +21,7 @@ class AppSettings:
     search_page_size: int = 500
     recent_files: list[dict] = field(default_factory=list)
     recent_search_rule_files: list[str] = field(default_factory=list)
+    shortcuts: dict[str, str] = field(default_factory=lambda: merged_shortcuts({}))
 
 
 def settings_path(base_file: str | Path) -> Path:
@@ -52,6 +55,7 @@ def load_settings(path: Path, max_recent_files: int = 10) -> AppSettings:
         data.get("recent_search_rule_files", []),
         max_recent_files,
     )
+    settings.shortcuts = merged_shortcuts(data.get("shortcuts", {}))
 
     color = data.get("default_highlight_color")
     if isinstance(color, list) and len(color) >= 3:
@@ -95,6 +99,7 @@ def save_settings(path: Path, settings: AppSettings) -> None:
         "recent_search_rule_files": settings.recent_search_rule_files,
         "save_incremental_safety_default": settings.save_incremental_safety_default,
         "search_page_size": settings.search_page_size,
+        "shortcuts": dict(settings.shortcuts),
         "use_foxit_freetext": settings.use_foxit_freetext,
         "use_popup_freetext_input": settings.use_popup_freetext_input,
     }
