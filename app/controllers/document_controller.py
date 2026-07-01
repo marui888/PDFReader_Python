@@ -551,7 +551,7 @@ class DocumentController:
         if choice == "discard":
             return True
         if choice == "save-incremental":
-            return self.save_incremental(confirm=False)
+            return self.save_incremental(confirm=True)
         if choice == "save-full":
             return self.save(confirm=True)
         return False

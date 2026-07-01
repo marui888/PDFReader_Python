@@ -38,7 +38,7 @@ class InlineFreeTextEdit(QPlainTextEdit):
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
-            self.canceled.emit()
+            self.accepted.emit(self.toPlainText())
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and (

@@ -134,7 +134,7 @@ def confirm_clear_annotation_index(window) -> bool:
 
 
 def confirm_delete_annotation(window, message: str) -> bool:
-    return ask_yes_no(window, "Delete Annotation", message)
+    return ask_yes_no(window, "Delete Annotation", message, default_no=False)
 
 
 def open_settings(window) -> None:

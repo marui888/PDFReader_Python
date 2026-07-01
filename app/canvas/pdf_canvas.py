@@ -19,6 +19,8 @@ class PdfCanvasView(QGraphicsView):
         self.setViewportUpdateMode(QGraphicsView.ViewportUpdateMode.BoundingRectViewportUpdate)
         self.boundary_turn_direction: str | None = None
         self.boundary_turn_count = 0
+        self.middle_pan_active = False
+        self.middle_pan_last_pos = None
 
     def wheelEvent(self, event: QWheelEvent) -> None:
         if self.owner is not None and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -44,7 +46,34 @@ class PdfCanvasView(QGraphicsView):
                 self.owner.go_forward_view()
                 event.accept()
                 return
+        if event.button() == Qt.MouseButton.MiddleButton:
+            self.middle_pan_active = True
+            self.middle_pan_last_pos = event.position().toPoint()
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event: QMouseEvent) -> None:
+        if self.middle_pan_active and self.middle_pan_last_pos is not None:
+            self.viewport().setCursor(Qt.CursorShape.ClosedHandCursor)
+            current_pos = event.position().toPoint()
+            delta = current_pos - self.middle_pan_last_pos
+            self.middle_pan_last_pos = current_pos
+            self.horizontalScrollBar().setValue(self.horizontalScrollBar().value() - delta.x())
+            self.verticalScrollBar().setValue(self.verticalScrollBar().value() - delta.y())
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        if event.button() == Qt.MouseButton.MiddleButton and self.middle_pan_active:
+            self.middle_pan_active = False
+            self.middle_pan_last_pos = None
+            self.viewport().setCursor(Qt.CursorShape.ArrowCursor)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if self.owner is not None:

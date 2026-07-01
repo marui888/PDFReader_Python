@@ -1936,7 +1936,7 @@ class MainWindow(QMainWindow):
             and self.inline_freetext_editor is not None
             and self.inline_freetext_editor.is_active()
         ):
-            self.inline_freetext_editor.cancel()
+            self.inline_freetext_editor.accept_current()
             event.accept()
             return
         if event.key() == Qt.Key.Key_Escape and self.active_tool is not None:

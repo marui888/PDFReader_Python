@@ -1,9 +1,9 @@
 {
-  "default_freetext_font_size": 12,
+  "default_freetext_font_size": 9,
   "default_highlight_color": [
-    0.45,
-    0.25,
-    0.08
+    1.0,
+    1.0,
+    0.0
   ],
   "default_highlight_opacity": 0.31,
   "extract_highlight_text_on_reindex": true,
@@ -12,6 +12,11 @@
   "quick_audit_detailed": true,
   "qpdf_bin_dir": "D:\\tools\\qpdf-12.3.2-msvc64\\bin",
   "recent_files": [
+    {
+      "path": "C:\\Users\\Admin\\Desktop\\\u7b14\u8bb0 \u63d0\u793a\u8bcd \u63d0\u95ee\\Typst\u7b14\u8bb0\\Typst Tutorial _JOM.pdf",
+      "last_page_index": 18,
+      "last_opened_at": "2026-07-01T14:07:14+08:00"
+    },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
       "last_page_index": 24,

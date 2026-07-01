@@ -85,7 +85,7 @@ class PdfAnnotationWriter:
         page: fitz.Page,
         rect: fitz.Rect,
         color: tuple[float, float, float] = (1, 0, 0),
-        border_width: float = 2,
+        border_width: float = 1,
         text: str = "Rectangle annotation",
     ) -> fitz.Annot:
         annot = page.add_rect_annot(rect)
@@ -101,7 +101,7 @@ class PdfAnnotationWriter:
         start: tuple[float, float],
         end: tuple[float, float],
         color: tuple[float, float, float] = (1, 0, 0),
-        border_width: float = 2,
+        border_width: float = 1,
         text: str = "Arrow annotation",
     ) -> fitz.Annot:
         annot = page.add_line_annot(start, end)
