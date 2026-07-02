@@ -39,6 +39,7 @@ class InteractionState:
     active_scene_drag_kind: str | None = None
     active_scene_drag_annotation_id: str | None = None
     active_scene_drag_start_pos: QPointF | None = None
+    active_scene_drag_handle: str | None = None
     active_tool: str | None = None
     tool_start_scene_pos: QPointF | None = None
     tool_preview_item: QGraphicsItem | None = None

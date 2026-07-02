@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable
 from datetime import datetime
+from math import ceil
 
 import pymupdf as fitz
 
@@ -174,9 +175,64 @@ class PdfAnnotationWriter:
         if model.app_type == "square":
             self.set_square_rect(annot, model, rect)
         elif model.app_type == "freetext":
+            rect = self.rect_with_freetext_resize_height(
+                rect,
+                model,
+                corner,
+                default_freetext_font_size,
+            )
             self.set_freetext_rect(annot, model, rect, default_freetext_font_size)
         else:
             raise RuntimeError(f"Annotation type cannot be resized: {model.app_type}")
+
+    def rect_with_freetext_resize_height(
+        self,
+        rect: fitz.Rect,
+        model: AnnotationModel,
+        corner: str,
+        default_freetext_font_size: int,
+    ) -> fitz.Rect:
+        required_height = self.estimated_freetext_height_for_width(
+            model.text or "",
+            model.font_size or default_freetext_font_size,
+            rect.width,
+        )
+        adjusted = fitz.Rect(rect)
+        if corner in {"left", "right", "top-left", "top-right", "bottom-left", "bottom-right"}:
+            adjusted.y1 = adjusted.y0 + required_height
+            return adjusted
+        if adjusted.height >= required_height:
+            return rect
+        adjusted.y1 = adjusted.y0 + required_height
+        return adjusted
+
+    def estimated_freetext_height_for_width(self, text: str, font_size: float, width: float) -> float:
+        usable_width = max(1.0, width - 2.0)
+        line_count = 0
+        for paragraph in text.split("\n"):
+            line_count += max(1, self.estimated_wrapped_freetext_line_count(paragraph, usable_width, font_size))
+        return max(12.0, ceil(line_count * (font_size * 1.15 + 2.0)))
+
+    def estimated_wrapped_freetext_line_count(self, text: str, usable_width: float, font_size: float) -> int:
+        if not text:
+            return 1
+        line_count = 1
+        current_width = 0.0
+        for character in text:
+            char_width = self.estimated_freetext_character_width(character, font_size)
+            if current_width > 0 and current_width + char_width > usable_width:
+                line_count += 1
+                current_width = char_width
+            else:
+                current_width += char_width
+        return line_count
+
+    def estimated_freetext_character_width(self, character: str, font_size: float) -> float:
+        if ord(character) >= 0x2E80:
+            return font_size
+        if character.isspace():
+            return font_size * 0.35
+        return font_size * 0.55
 
     def set_square_rect(self, annot: fitz.Annot, model: AnnotationModel, rect: fitz.Rect) -> None:
         inset = max(0.0, (model.border_width or 0.0) / 2)
@@ -330,6 +386,32 @@ class PdfAnnotationWriter:
         color = self.safe_freetext_edit_color(color)
         new_width, new_height = estimate_size(text, font_size)
         annot.set_rect(self.freetext_rect_from_left_center(page.rect, model.rect, new_width, new_height))
+        annot.set_info(title="PDF Note Reader", content=text)
+        annot.set_border(width=0)
+        self.normalize_freetext_annotation_clean_appearance(annot, font_size, color)
+
+    def update_freetext_annotation_clean_appearance_in_rect(
+        self,
+        page: fitz.Page,
+        model: AnnotationModel,
+        rect: fitz.Rect,
+        text: str,
+        font_size: int,
+        color: tuple[float, float, float],
+    ) -> None:
+        annot = self.find_page_annotation_by_xref(page, model.xref)
+        if annot is None:
+            raise RuntimeError("The selected annotation was not found on this page.")
+
+        page_rect = page.rect
+        target_rect = fitz.Rect(
+            max(page_rect.x0, min(rect.x0, page_rect.x1 - 12.0)),
+            max(page_rect.y0, min(rect.y0, page_rect.y1 - 12.0)),
+            max(page_rect.x0 + 12.0, min(rect.x1, page_rect.x1)),
+            max(page_rect.y0 + 12.0, min(rect.y1, page_rect.y1)),
+        )
+        color = self.safe_freetext_edit_color(color)
+        annot.set_rect(target_rect)
         annot.set_info(title="PDF Note Reader", content=text)
         annot.set_border(width=0)
         self.normalize_freetext_annotation_clean_appearance(annot, font_size, color)

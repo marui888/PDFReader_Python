@@ -288,6 +288,29 @@ class SearchController:
 
         window.cancel_add_tool()
         window.page_index = max(0, min(page_index, len(window.doc) - 1))
+        if window.view_mode == "continuous":
+            found = window.scroll_continuous_to_xref(window.page_index, xref)
+            window.update_current_recent_page()
+            if found:
+                location = "new tab" if opened_new_tab else "existing tab"
+                window.statusBar().showMessage(f"Jumped to search result on page {window.page_index + 1}.")
+                window.log_debug(
+                    f"Search result jumped in continuous view: "
+                    f"{target_path} page={window.page_index + 1} xref={xref} {location}"
+                )
+                return
+
+            message = (
+                f"Search result page opened, but annotation xref={xref} was not found. "
+                "The index may be stale. Reindex this PDF."
+            )
+            window.statusBar().showMessage(message)
+            window.log_debug(
+                f"Search result xref not found in continuous view: "
+                f"{target_path} page={window.page_index + 1} xref={xref}"
+            )
+            return
+
         window.render_page()
         window.update_current_recent_page()
         selected = window.select_annotation_by_xref(xref, render_page=False)

@@ -30,7 +30,11 @@ class PdfCanvasView(QGraphicsView):
                 self.owner.zoom_out()
             event.accept()
             return
-        if self.owner is not None and self.handle_boundary_turn_intent(event.angleDelta().y()):
+        if (
+            self.owner is not None
+            and getattr(self.owner, "view_mode", "single") != "continuous"
+            and self.handle_boundary_turn_intent(event.angleDelta().y())
+        ):
             event.accept()
             return
         self.reset_boundary_turn_state()
@@ -86,6 +90,10 @@ class PdfCanvasView(QGraphicsView):
                     self.owner.go_forward_view()
                     event.accept()
                     return
+            if getattr(self.owner, "view_mode", "single") == "continuous":
+                self.reset_boundary_turn_state()
+                super().keyPressEvent(event)
+                return
             if event.key() == Qt.Key.Key_PageUp and self.is_at_top():
                 self.handle_boundary_turn_intent(1)
                 event.accept()
@@ -148,6 +156,11 @@ class AnnotationScene(QGraphicsScene):
         self.owner = owner
 
     def mousePressEvent(self, event) -> None:
+        if getattr(self.owner, "view_mode", "single") == "continuous":
+            if self.owner.on_continuous_scene_mouse_press(event.scenePos(), event.button()):
+                return
+            super().mousePressEvent(event)
+            return
         if self.owner.on_tool_mouse_press(event.scenePos(), event.button()):
             return
         if event.button() == Qt.MouseButton.LeftButton:
@@ -156,6 +169,15 @@ class AnnotationScene(QGraphicsScene):
         super().mousePressEvent(event)
 
     def mouseMoveEvent(self, event) -> None:
+        if getattr(self.owner, "view_mode", "single") == "continuous":
+            if event.buttons() & Qt.MouseButton.LeftButton and self.owner.on_continuous_scene_mouse_move(
+                event.scenePos()
+            ):
+                return
+            super().mouseMoveEvent(event)
+            if not (event.buttons() & Qt.MouseButton.LeftButton):
+                self.owner.on_continuous_scene_mouse_hover(event.scenePos())
+            return
         if self.owner.on_tool_mouse_move(event.scenePos()):
             return
         super().mouseMoveEvent(event)
@@ -165,6 +187,13 @@ class AnnotationScene(QGraphicsScene):
             self.owner.on_scene_mouse_hover(event.scenePos())
 
     def mouseReleaseEvent(self, event) -> None:
+        if getattr(self.owner, "view_mode", "single") == "continuous":
+            if event.button() == Qt.MouseButton.LeftButton and self.owner.on_continuous_scene_mouse_release(
+                event.scenePos()
+            ):
+                return
+            super().mouseReleaseEvent(event)
+            return
         if self.owner.on_tool_mouse_release(event.scenePos()):
             return
         super().mouseReleaseEvent(event)
@@ -172,6 +201,14 @@ class AnnotationScene(QGraphicsScene):
             self.owner.on_scene_mouse_release(event.scenePos())
 
     def mouseDoubleClickEvent(self, event) -> None:
+        if getattr(self.owner, "view_mode", "single") == "continuous":
+            if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
+                super().mouseDoubleClickEvent(event)
+                return
+            if self.owner.on_continuous_scene_mouse_double_click(event.scenePos()):
+                return
+            super().mouseDoubleClickEvent(event)
+            return
         if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
             super().mouseDoubleClickEvent(event)
             return
@@ -180,6 +217,13 @@ class AnnotationScene(QGraphicsScene):
         super().mouseDoubleClickEvent(event)
 
     def contextMenuEvent(self, event) -> None:
+        if getattr(self.owner, "view_mode", "single") == "continuous":
+            if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
+                if self.owner.show_inline_freetext_context_menu(event.screenPos()):
+                    return
+            self.owner.clear_scene_drag_state()
+            self.owner.show_annotation_context_menu(event.scenePos(), event.screenPos())
+            return
         if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
             if self.owner.show_inline_freetext_context_menu(event.screenPos()):
                 return

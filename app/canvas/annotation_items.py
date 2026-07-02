@@ -19,6 +19,8 @@ class AnnotationItemRenderer:
         default_highlight_opacity: float,
         register_item: Callable[[QGraphicsItem, AnnotationModel], None],
         register_hit_item: Callable[[QGraphicsItem, AnnotationModel], None],
+        scene_offset: QPointF | None = None,
+        render_hit_items: bool = True,
     ) -> None:
         self.scene = scene
         self.zoom = zoom
@@ -26,6 +28,8 @@ class AnnotationItemRenderer:
         self.default_highlight_opacity = default_highlight_opacity
         self.register_item = register_item
         self.register_hit_item = register_hit_item
+        self.scene_offset = scene_offset or QPointF(0, 0)
+        self.render_hit_items = render_hit_items
 
     def render(self, model: AnnotationModel) -> None:
         if model.app_type == "highlight":
@@ -85,6 +89,7 @@ class AnnotationItemRenderer:
         width = max(1.0, (model.border_width or 1.0) * self.zoom)
         item = self.scene.addRect(rect, QPen(color, width), QBrush(Qt.BrushStyle.NoBrush))
         self.register_item(item, model)
+        item.unsetCursor()
         item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
         self.add_square_hit_item(rect, model)
 
@@ -105,12 +110,16 @@ class AnnotationItemRenderer:
             self.add_arrow_head_lines(start, end, size, pen, model)
 
     def add_rect_hit_item(self, rect: QRectF, model: AnnotationModel) -> None:
+        if not self.render_hit_items:
+            return
         margin = max(4.0, 4.0 * self.zoom)
         hit_rect = rect.adjusted(-margin, -margin, margin, margin)
         item = self.scene.addRect(hit_rect, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0)))
         self.register_hit_item(item, model)
 
     def add_square_hit_item(self, rect: QRectF, model: AnnotationModel) -> None:
+        if not self.render_hit_items:
+            return
         width = max(8.0, ((model.border_width or 1.0) * self.zoom) + 6.0)
         pen = QPen(QColor(0, 0, 0), width)
         lines = (
@@ -124,26 +133,30 @@ class AnnotationItemRenderer:
             self.register_hit_item(item, model)
 
     def add_highlight_hit_item(self, polygon: QPolygonF, model: AnnotationModel) -> None:
+        if not self.render_hit_items:
+            return
         margin = max(5.0, 5.0 * self.zoom)
         hit_rect = polygon.boundingRect().adjusted(-margin, -margin, margin, margin)
         item = self.scene.addRect(hit_rect, QPen(Qt.PenStyle.NoPen), QBrush(QColor(0, 0, 0)))
         self.register_hit_item(item, model)
 
     def add_line_hit_item(self, start: QPointF, end: QPointF, model: AnnotationModel) -> None:
+        if not self.render_hit_items:
+            return
         width = max(12.0, 10.0 * self.zoom)
         item = self.scene.addLine(QLineF(start, end), QPen(QColor(0, 0, 0), width))
         self.register_hit_item(item, model)
 
     def scene_rect(self, rect: fitz.Rect) -> QRectF:
         return QRectF(
-            rect.x0 * self.zoom,
-            rect.y0 * self.zoom,
+            self.scene_offset.x() + rect.x0 * self.zoom,
+            self.scene_offset.y() + rect.y0 * self.zoom,
             rect.width * self.zoom,
             rect.height * self.zoom,
         )
 
     def scene_point(self, point: tuple[float, float]) -> QPointF:
-        return QPointF(point[0] * self.zoom, point[1] * self.zoom)
+        return QPointF(self.scene_offset.x() + point[0] * self.zoom, self.scene_offset.y() + point[1] * self.zoom)
 
     def pdf_color(self, color: tuple | None, fallback: QColor) -> QColor:
         if not color:

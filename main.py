@@ -4,6 +4,7 @@ from math import ceil
 from pathlib import Path
 
 import pymupdf as fitz
+from shiboken6 import isValid
 from app.services.annotation_index import AnnotationIndex
 from app.repositories.annotation_repository import AnnotationRepository
 from app.search.annotation_search_query import AnnotationSearchQuery
@@ -26,6 +27,7 @@ from app.models.annotation_model import (
     EDITABLE_APP_TYPES,
     AnnotationModel,
 )
+from app.models.continuous_view import PageLayout, PageViewItem
 from app.canvas.pdf_canvas import AnnotationScene, PdfCanvasView
 from app.canvas.inline_freetext_editor import InlineFreeTextEditorManager
 from app.services.freetext_batch import FreeTextMatch
@@ -67,6 +69,7 @@ class MainWindow(QMainWindow):
         self.zoom = 1.5
         self.use_foxit_freetext = False
         self.use_popup_freetext_input = False
+        self.use_graphics_freetext_editor = True
         self.freetext_font_size_min = 4
         self.freetext_font_size_max = 20
         self.default_freetext_font_size = 7
@@ -100,6 +103,7 @@ class MainWindow(QMainWindow):
         self.active_scene_drag_kind: str | None = None
         self.active_scene_drag_annotation_id: str | None = None
         self.active_scene_drag_start_pos: QPointF | None = None
+        self.active_scene_drag_handle: str | None = None
         self.annotations_dock: QDockWidget | None = None
         self.annotations_tabs: QTabWidget | None = None
         self.debug_log_dock: QDockWidget | None = None
@@ -138,19 +142,38 @@ class MainWindow(QMainWindow):
         self.tool_preview_items: list[QGraphicsItem] = []
         self.text_selection_active = False
         self.text_selection_start_scene_pos: QPointF | None = None
+        self.text_selection_page_index: int | None = None
         self.text_selection_items: list[QGraphicsItem] = []
         self.text_selection_rects: list[fitz.Rect] = []
         self.inline_freetext_editor: InlineFreeTextEditorManager | None = None
         self.inline_freetext_edit_annotation_id: str | None = None
+        self.inline_freetext_edit_page_index: int | None = None
+        self.inline_freetext_edit_xref: int | None = None
         self.inline_freetext_clear_selection_on_accept = False
         self.hidden_inline_freetext_annotation_id: str | None = None
         self.text_lines_cache_page_index: int | None = None
         self.text_lines_cache: list[list[dict]] | None = None
+        self.view_mode = "single"
+        self.continuous_page_gap = 20.0
+        self.continuous_cache_radius = 2
+        self.continuous_page_layouts: list[PageLayout] = []
+        self.continuous_page_items: dict[int, PageViewItem] = {}
+        self.continuous_annotation_cache: dict[int, list[AnnotationModel]] = {}
+        self.continuous_pixmap_cache: dict[int, QPixmap] = {}
+        self.continuous_pixmap_cache_limit = 12
+        self.continuous_layout_doc_id: int | None = None
+        self.continuous_layout_zoom: float | None = None
+        self.continuous_suppress_scroll_sync = False
+        self.continuous_scroll_timer = QTimer(self)
+        self.continuous_scroll_timer.setSingleShot(True)
+        self.continuous_scroll_timer.setInterval(40)
+        self.continuous_scroll_timer.timeout.connect(self.on_continuous_scroll_timer)
 
         self.scene = AnnotationScene(self)
         self.scene.selectionChanged.connect(self.on_scene_selection_changed)
         self.view = PdfCanvasView(self)
         self.view.setScene(self.scene)
+        self.view.verticalScrollBar().valueChanged.connect(lambda _value: self.schedule_view_scrolled())
         self.page_item = QGraphicsPixmapItem()
         self.page_item.setZValue(0)
         self.scene.addItem(self.page_item)
@@ -160,6 +183,7 @@ class MainWindow(QMainWindow):
             self.on_inline_freetext_accept,
             self.on_inline_freetext_cancel,
             self.keyword_groups,
+            lambda: self.use_graphics_freetext_editor,
         )
         self.document_tabs = QTabBar()
         self.document_tabs.setExpanding(False)
@@ -274,6 +298,14 @@ class MainWindow(QMainWindow):
     @active_scene_drag_start_pos.setter
     def active_scene_drag_start_pos(self, value: QPointF | None) -> None:
         self.state.interaction.active_scene_drag_start_pos = value
+
+    @property
+    def active_scene_drag_handle(self) -> str | None:
+        return self.state.interaction.active_scene_drag_handle
+
+    @active_scene_drag_handle.setter
+    def active_scene_drag_handle(self, value: str | None) -> None:
+        self.state.interaction.active_scene_drag_handle = value
 
     @property
     def active_tool(self) -> str | None:
@@ -537,6 +569,7 @@ class MainWindow(QMainWindow):
     def mark_dirty(self) -> None:
         self.is_dirty = True
         self.navigation_anchor_dirty = True
+        self.canvas_controller.invalidate_continuous_annotation_cache(self.page_index)
         if self.active_session_index is not None and 0 <= self.active_session_index < len(self.sessions):
             self.sessions[self.active_session_index].is_dirty = True
             self.update_document_tab_title(self.active_session_index)
@@ -577,8 +610,14 @@ class MainWindow(QMainWindow):
         self.record_view_location_before_navigation()
         self.page_index = target_index
         self.cancel_add_tool()
+        if self.view_mode == "continuous":
+            self.scroll_continuous_to_page(target_index)
+            self.update_current_recent_page()
+            self.save_active_session_state()
+            return
         self.render_page()
-        self.defer_scroll_to_page_top_left()
+        if self.view_mode != "continuous":
+            self.defer_scroll_to_page_top_left()
         self.update_current_recent_page()
         self.save_active_session_state()
 
@@ -609,6 +648,7 @@ class MainWindow(QMainWindow):
         settings = load_settings(self.settings_path(), self.max_recent_files)
         self.use_foxit_freetext = settings.use_foxit_freetext
         self.use_popup_freetext_input = settings.use_popup_freetext_input
+        self.use_graphics_freetext_editor = settings.use_graphics_freetext_editor
         self.freetext_font_size_min = settings.freetext_font_size_min
         self.freetext_font_size_max = settings.freetext_font_size_max
         self.default_freetext_font_size = settings.default_freetext_font_size
@@ -627,6 +667,7 @@ class MainWindow(QMainWindow):
         settings = AppSettings(
             use_foxit_freetext=self.use_foxit_freetext,
             use_popup_freetext_input=self.use_popup_freetext_input,
+            use_graphics_freetext_editor=self.use_graphics_freetext_editor,
             freetext_font_size_min=self.freetext_font_size_min,
             freetext_font_size_max=self.freetext_font_size_max,
             default_freetext_font_size=self.default_freetext_font_size,
@@ -670,6 +711,93 @@ class MainWindow(QMainWindow):
 
     def render_page(self, preserve_selection: bool = False, keep_view_position: bool = False) -> None:
         self.canvas_controller.render_page(preserve_selection, keep_view_position)
+
+    def on_view_scrolled(self) -> None:
+        self.canvas_controller.on_view_scrolled()
+
+    def schedule_view_scrolled(self) -> None:
+        if self.view_mode != "continuous":
+            return
+        if self.continuous_suppress_scroll_sync:
+            return
+        if not self.continuous_scroll_timer_is_valid():
+            return
+        self.continuous_scroll_timer.start()
+
+    def on_continuous_scroll_timer(self) -> None:
+        if self.view_mode != "continuous":
+            return
+        if self.doc is None:
+            return
+        self.on_view_scrolled()
+
+    def continuous_scroll_timer_is_valid(self) -> bool:
+        try:
+            return self.continuous_scroll_timer is not None and isValid(self.continuous_scroll_timer)
+        except RuntimeError:
+            return False
+
+    def stop_continuous_scroll_timer(self) -> None:
+        if not self.continuous_scroll_timer_is_valid():
+            return
+        try:
+            self.continuous_scroll_timer.stop()
+        except RuntimeError:
+            return
+
+    def set_continuous_view_enabled(self, enabled: bool) -> None:
+        if self.doc is None:
+            return
+        target_mode = "continuous" if enabled else "single"
+        if self.view_mode == target_mode:
+            return
+        anchor = self.canvas_controller.capture_view_mode_anchor()
+        preserve_selection = False
+        if not enabled and self.selected_annotation_id is not None:
+            model = self.annotation_model_map.get(self.selected_annotation_id)
+            preserve_selection = model is not None and model.page_index == self.page_index
+        fit_single_page = (
+            not enabled
+            and anchor is not None
+            and anchor.get("mode") == "continuous"
+            and int(anchor.get("visible_page_count", 1)) > 1
+        )
+        if anchor is not None:
+            self.page_index = max(0, min(int(anchor.get("page_index", self.page_index)), len(self.doc) - 1))
+        if fit_single_page:
+            self.zoom = self.canvas_controller.fit_zoom_for_page(self.page_index)
+        active_tool = self.active_tool
+        self.remove_tool_preview()
+        self.tool_start_scene_pos = None
+        self.clear_scene_drag_state()
+        self.stop_continuous_scroll_timer()
+        self.view_mode = target_mode
+        if hasattr(self, "continuous_view_action"):
+            self.continuous_view_action.setChecked(enabled)
+        self.render_page(preserve_selection=preserve_selection)
+        if anchor is not None and not fit_single_page:
+            self.canvas_controller.restore_view_mode_anchor(anchor)
+        self.set_active_tool(active_tool)
+        mode_label = "Continuous" if enabled else "Single Page"
+        self.statusBar().showMessage(f"View mode: {mode_label}")
+
+    def clear_continuous_page_items(self) -> None:
+        self.canvas_controller.clear_continuous_page_items()
+
+    def clear_continuous_annotation_cache(self) -> None:
+        self.canvas_controller.clear_continuous_annotation_cache()
+
+    def clear_continuous_pixmap_cache(self) -> None:
+        self.canvas_controller.clear_continuous_pixmap_cache()
+
+    def scroll_continuous_to_page(self, page_index: int) -> None:
+        self.canvas_controller.scroll_continuous_to_page(page_index)
+
+    def scroll_continuous_to_xref(self, page_index: int, xref: int) -> bool:
+        return self.canvas_controller.scroll_continuous_to_xref(page_index, xref)
+
+    def select_continuous_annotation_at_scene_pos(self, scene_pos: QPointF) -> bool:
+        return self.canvas_controller.select_continuous_annotation_at_scene_pos(scene_pos)
 
     def defer_scroll_to_page_top_left(self) -> None:
         QTimer.singleShot(0, self.scroll_to_page_top_left)
@@ -732,6 +860,21 @@ class MainWindow(QMainWindow):
 
     def on_scene_mouse_release(self, scene_pos: QPointF | None = None) -> None:
         self.annotation_controller.on_scene_mouse_release(scene_pos)
+
+    def on_continuous_scene_mouse_press(self, scene_pos: QPointF, button=None) -> bool:
+        return self.annotation_controller.on_continuous_scene_mouse_press(scene_pos, button)
+
+    def on_continuous_scene_mouse_move(self, scene_pos: QPointF) -> bool:
+        return self.annotation_controller.on_continuous_scene_mouse_move(scene_pos)
+
+    def on_continuous_scene_mouse_release(self, scene_pos: QPointF) -> bool:
+        return self.annotation_controller.on_continuous_scene_mouse_release(scene_pos)
+
+    def on_continuous_scene_mouse_hover(self, scene_pos: QPointF) -> None:
+        self.annotation_controller.on_continuous_scene_mouse_hover(scene_pos)
+
+    def on_continuous_scene_mouse_double_click(self, scene_pos: QPointF) -> bool:
+        return self.annotation_controller.on_continuous_scene_mouse_double_click(scene_pos)
 
     def record_geometry_undo(self, label: str, model: AnnotationModel) -> None:
         self.annotation_controller.record_geometry_undo(label, model)
@@ -870,7 +1013,7 @@ class MainWindow(QMainWindow):
 
     def clear_selection_items(self) -> None:
         for item in self.selection_items:
-            self.scene.removeItem(item)
+            self.canvas_controller.safe_remove_scene_item(item)
         self.selection_items.clear()
 
     def sync_scene_selection(self) -> None:
@@ -1095,6 +1238,11 @@ class MainWindow(QMainWindow):
             self.log_debug(line)
         self.show_debug_log()
 
+    def audit_continuous_view_state(self) -> None:
+        for line in self.build_continuous_view_state_debug_lines("Audit Continuous View State"):
+            self.log_debug(line)
+        self.show_debug_log()
+
     def debug_selected_annotation_pdf_object(self) -> None:
         if self.doc is None or self.selected_annotation_id is None:
             return
@@ -1248,6 +1396,101 @@ class MainWindow(QMainWindow):
 
         return lines
 
+    def build_continuous_view_state_debug_lines(self, title: str) -> list[str]:
+        if self.doc is None:
+            return [f"{title} skipped: no PDF open"]
+
+        rendered_pages = sorted(self.continuous_page_items)
+        visible_pages = (
+            sorted(self.canvas_controller.visible_continuous_page_indexes())
+            if self.view_mode == "continuous" and self.continuous_page_layouts
+            else []
+        )
+        center_page = (
+            self.canvas_controller.current_page_index_from_continuous_view()
+            if self.view_mode == "continuous" and self.continuous_page_layouts
+            else None
+        )
+        selected_model = (
+            self.annotation_model_map.get(self.selected_annotation_id)
+            if self.selected_annotation_id is not None
+            else None
+        )
+        selected_rendered = (
+            selected_model is not None and selected_model.page_index in self.continuous_page_items
+        )
+        selected_cached = (
+            selected_model is not None
+            and any(
+                model.xref == selected_model.xref
+                for model in self.continuous_annotation_cache.get(selected_model.page_index, [])
+            )
+        )
+
+        table_rows = self.annotations_table.rowCount() if self.annotations_table is not None else "n/a"
+        lines = [
+            title,
+            f"  file: {self.pdf_path}",
+            f"  view_mode: {self.view_mode}",
+            f"  current page: {self.page_index + 1}/{len(self.doc)}",
+            f"  viewport center page: {center_page + 1 if center_page is not None else 'n/a'}",
+            f"  zoom: {self.zoom}",
+            f"  continuous layouts: {len(self.continuous_page_layouts)}",
+            f"  continuous layout doc id matches: {self.continuous_layout_doc_id == id(self.doc)}",
+            f"  continuous layout zoom matches: {self.continuous_layout_zoom == self.zoom}",
+            f"  visible pages: {[page + 1 for page in visible_pages]}",
+            f"  rendered pages: {[page + 1 for page in rendered_pages]}",
+            f"  annotation cache pages: {[page + 1 for page in sorted(self.continuous_annotation_cache)]}",
+            f"  pixmap cache pages: {[page + 1 for page in sorted(self.continuous_pixmap_cache)]}",
+            f"  selected_annotation_id: {self.selected_annotation_id}",
+            f"  selected exists in model map: {selected_model is not None}",
+            f"  selected page: {selected_model.page_index + 1 if selected_model is not None else 'n/a'}",
+            f"  selected rendered page loaded: {selected_rendered}",
+            f"  selected exists in continuous annotation cache: {selected_cached}",
+            f"  current_annotations: {len(self.current_annotations)}",
+            f"  annotation_model_map: {len(self.annotation_model_map)}",
+            f"  selection_items: {len(self.selection_items)}",
+            f"  text_selection_active: {self.text_selection_active}",
+            f"  text_selection_page_index: {self.text_selection_page_index + 1 if self.text_selection_page_index is not None else 'n/a'}",
+            f"  text_selection_rects: {len(self.text_selection_rects)}",
+            f"  text_selection_items: {len(self.text_selection_items)}",
+            f"  active_tool: {self.active_tool}",
+            f"  tool_start_scene_pos: {self.tool_start_scene_pos}",
+            f"  active_scene_drag_kind: {self.active_scene_drag_kind}",
+            f"  active_scene_drag_annotation_id: {self.active_scene_drag_annotation_id}",
+            f"  table rows/current annotations: {table_rows} / {len(self.current_annotations)}",
+        ]
+
+        for page_index in rendered_pages:
+            item = self.continuous_page_items.get(page_index)
+            models = self.continuous_annotation_cache.get(page_index, [])
+            if item is None:
+                lines.append(f"  page {page_index + 1}: missing PageViewItem")
+                continue
+            lines.append(
+                f"  page {page_index + 1}: "
+                f"models={len(models)} annotation_items={len(item.annotation_items)} "
+                f"annotation_model_ids={len(item.annotation_model_ids)} "
+                f"pixmap={'yes' if item.pixmap_item is not None else 'no'}"
+            )
+
+        warnings = []
+        if self.view_mode == "continuous":
+            if len(self.continuous_page_layouts) != len(self.doc):
+                warnings.append("continuous layout count does not match document page count")
+            if self.text_selection_page_index is not None and not (0 <= self.text_selection_page_index < len(self.doc)):
+                warnings.append("text_selection_page_index is out of range")
+            if selected_model is not None and not selected_rendered:
+                warnings.append("selected annotation page is not currently rendered")
+            if self.page_index < 0 or self.page_index >= len(self.doc):
+                warnings.append("current page index is out of range")
+        else:
+            if self.continuous_page_items:
+                warnings.append("single view still has continuous page items")
+
+        lines.append(f"  warnings: {warnings if warnings else 'none'}")
+        return lines
+
     def show_audit_report(self, title: str, text: str) -> None:
         main_window_docks.show_text_report(self, title, text)
 
@@ -1305,6 +1548,20 @@ class MainWindow(QMainWindow):
         self.record_view_location_before_navigation()
         self.cancel_add_tool()
         self.page_index = max(0, min(page_index, len(self.doc) - 1))
+        if self.view_mode == "continuous":
+            found = self.scroll_continuous_to_xref(self.page_index, xref)
+            self.update_current_recent_page()
+            if found:
+                self.statusBar().showMessage(f"Jumped to FreeText result on page {self.page_index + 1}.")
+                self.log_debug(f"Batch FreeText jumped in continuous view: page={self.page_index + 1} xref={xref}")
+            else:
+                main_window_dialogs.show_warning(
+                    self,
+                    "Batch FreeText",
+                    f"FreeText annotation was not found on page {self.page_index + 1}.\n\nxref={xref}",
+                )
+                self.log_debug(f"Batch FreeText jump failed: page={self.page_index + 1} xref={xref}")
+            return
         self.render_page()
         self.update_current_recent_page()
         selected = self.select_annotation_by_xref(xref, render_page=False)
@@ -1427,6 +1684,9 @@ class MainWindow(QMainWindow):
     def apply_batch_freetext_text_change(self, results: list[FreeTextMatch], transform, label: str) -> int:
         if self.doc is None:
             return 0
+        if self.view_mode == "continuous":
+            self.statusBar().showMessage("Continuous view is read-only. Switch to Single Page to edit Batch FreeText.")
+            return 0
         keyword = self.batch_freetext_keyword()
         if not keyword:
             main_window_dialogs.show_warning(self, "Batch FreeText", "Enter text to find before editing.")
@@ -1472,6 +1732,9 @@ class MainWindow(QMainWindow):
 
     def apply_batch_freetext_annotation_delete(self, results: list[FreeTextMatch], label: str) -> int:
         if self.doc is None:
+            return 0
+        if self.view_mode == "continuous":
+            self.statusBar().showMessage("Continuous view is read-only. Switch to Single Page to delete Batch FreeText.")
             return 0
 
         deleted = 0
@@ -1563,6 +1826,9 @@ class MainWindow(QMainWindow):
         height: float = 72.0,
         font_size: int | None = None,
         edit_annotation_id: str | None = None,
+        select_all: bool = True,
+        stable_edit_mode: bool = False,
+        max_height: float | None = None,
     ) -> None:
         if self.inline_freetext_editor is None:
             return
@@ -1572,6 +1838,9 @@ class MainWindow(QMainWindow):
             width=width,
             height=height,
             font_size=font_size or self.default_freetext_font_size,
+            select_all=select_all,
+            stable_edit_mode=stable_edit_mode,
+            max_height=max_height,
         )
         self.inline_freetext_edit_annotation_id = edit_annotation_id
 
@@ -1593,7 +1862,14 @@ class MainWindow(QMainWindow):
         page_rect = self.page_item.boundingRect()
         top_left.setX(max(page_rect.left(), min(top_left.x(), page_rect.right() - width)))
         top_left.setY(max(page_rect.top(), min(top_left.y(), page_rect.bottom() - height)))
-        self.begin_inline_freetext_editor(top_left, text, width, height, font_size)
+        self.begin_inline_freetext_editor(
+            top_left,
+            text,
+            width,
+            height,
+            font_size,
+            max_height=page_rect.bottom() - top_left.y(),
+        )
 
     def cancel_inline_freetext_editor(self) -> None:
         if self.inline_freetext_editor is not None:
@@ -1634,14 +1910,19 @@ class MainWindow(QMainWindow):
             return False
 
         rect = self.scene_rect(model.rect)
+        font_size = int(model.font_size or self.default_freetext_font_size)
+        page_rect = self.page_item.boundingRect()
         self.hide_inline_freetext_overlay(model.id)
         self.begin_inline_freetext_editor(
             rect.topLeft(),
             text=model.text,
             width=max(40.0, rect.width()),
-            height=max(self.default_inline_freetext_editor_height(int(model.font_size or self.default_freetext_font_size)), rect.height()),
-            font_size=int(model.font_size or self.default_freetext_font_size),
+            height=max(14.0, rect.height()),
+            font_size=font_size,
             edit_annotation_id=model.id,
+            select_all=False,
+            stable_edit_mode=True,
+            max_height=page_rect.bottom() - rect.top(),
         )
         self.statusBar().showMessage("Editing FreeText inline. Ctrl+Enter to apply, Esc to cancel.")
         return True
@@ -1650,11 +1931,15 @@ class MainWindow(QMainWindow):
         if self.doc is None:
             return
         edit_annotation_id = self.inline_freetext_edit_annotation_id
+        edit_page_index = self.inline_freetext_edit_page_index
+        edit_xref = self.inline_freetext_edit_xref
         clear_selection = self.inline_freetext_clear_selection_on_accept
         self.inline_freetext_edit_annotation_id = None
+        self.inline_freetext_edit_page_index = None
+        self.inline_freetext_edit_xref = None
         self.inline_freetext_clear_selection_on_accept = False
         if edit_annotation_id is not None:
-            self.finish_inline_freetext_edit(edit_annotation_id, text)
+            self.finish_inline_freetext_edit(edit_annotation_id, text, scene_pos, scene_size, edit_page_index, edit_xref)
             if clear_selection:
                 self.select_annotation(None)
             return
@@ -1667,10 +1952,30 @@ class MainWindow(QMainWindow):
             return
         try:
             scene_rect = QRectF(scene_pos, scene_size)
-            rect = self.pdf_rect_from_scene_rect(scene_rect)
-            xref = self.create_freetext_annotation(rect, text)
-            self.record_add_undo("Add FreeText", self.page_index, xref)
-            self.set_active_tool("freetext")
+            if self.view_mode == "continuous" and edit_page_index is not None:
+                rect = self.annotation_controller.continuous_pdf_rect_from_scene_points(
+                    edit_page_index,
+                    scene_rect.topLeft(),
+                    scene_rect.bottomRight(),
+                )
+                annot = PdfAnnotationWriter(self.doc).add_freetext_annotation(
+                    self.doc[edit_page_index],
+                    rect,
+                    text,
+                    self.default_freetext_font_size,
+                    (1, 0, 0),
+                    self.use_foxit_freetext,
+                )
+                xref = annot.xref
+                self.mark_dirty()
+                self.record_add_undo("Add FreeText", edit_page_index, xref)
+                self.annotation_controller.refresh_continuous_page_after_geometry_edit(edit_page_index, xref)
+                self.set_active_tool("freetext")
+            else:
+                rect = self.pdf_rect_from_scene_rect(scene_rect)
+                xref = self.create_freetext_annotation(rect, text)
+                self.record_add_undo("Add FreeText", self.page_index, xref)
+                self.set_active_tool("freetext")
             self.statusBar().showMessage(f"Added FreeText xref={xref}. Use Save to persist.")
             self.log_debug(
                 f"Inline FreeText created: xref={xref} chars={len(text)} "
@@ -1684,25 +1989,83 @@ class MainWindow(QMainWindow):
 
     def on_inline_freetext_cancel(self) -> None:
         self.inline_freetext_edit_annotation_id = None
+        self.inline_freetext_edit_page_index = None
+        self.inline_freetext_edit_xref = None
         self.inline_freetext_clear_selection_on_accept = False
         self.show_hidden_inline_freetext_overlay()
+        if self.view_mode == "continuous":
+            self.refresh_annotation_overlay(preserve_selection=True)
         self.log_debug("Inline FreeText canceled")
 
-    def finish_inline_freetext_edit(self, annotation_id: str, text: str) -> None:
+    def finish_inline_freetext_edit(
+        self,
+        annotation_id: str,
+        text: str,
+        scene_pos: QPointF,
+        scene_size,
+        page_index: int | None = None,
+        xref: int | None = None,
+    ) -> None:
         model = self.annotation_model_map.get(annotation_id)
+        if model is None and self.view_mode == "continuous" and page_index is not None and xref is not None:
+            model = next(
+                (candidate for candidate in self.canvas_controller.continuous_load_page_annotations(page_index) if candidate.xref == xref),
+                None,
+            )
         if model is None or model.app_type != "freetext":
             self.log_debug(f"Inline FreeText edit skipped: annotation not found id={annotation_id}")
+            return
+        if not text.strip():
+            self.show_hidden_inline_freetext_overlay()
+            if self.view_mode == "continuous":
+                self.annotation_controller.refresh_continuous_page_after_geometry_edit(model.page_index, model.xref)
+            elif self.selected_annotation_id != annotation_id:
+                self.select_annotation(annotation_id)
+            self.statusBar().showMessage("FreeText edit ignored: empty text.")
+            self.log_debug(f"Inline FreeText edit ignored empty text: xref={model.xref}")
             return
         if self.selected_annotation_id != annotation_id:
             self.select_annotation(annotation_id)
         if text == model.text:
-            self.show_hidden_inline_freetext_overlay()
+            if self.view_mode == "continuous":
+                self.annotation_controller.refresh_continuous_page_after_geometry_edit(model.page_index, model.xref)
+            else:
+                self.show_hidden_inline_freetext_overlay()
             self.statusBar().showMessage(f"FreeText unchanged xref={model.xref}.")
             return
         try:
             font_size = int(model.font_size or self.default_freetext_font_size)
             color = model.color or (1, 0, 0)
-            self.annotation_controller.on_freetext_property_change(text, font_size, color)
+            scene_rect = QRectF(scene_pos, scene_size)
+            if self.view_mode == "continuous":
+                edit_page_index = page_index if page_index is not None else model.page_index
+                rect = self.annotation_controller.continuous_pdf_rect_from_scene_points(
+                    edit_page_index,
+                    scene_rect.topLeft(),
+                    scene_rect.bottomRight(),
+                )
+                self.annotation_controller.update_freetext_annotation_clean_appearance_in_rect_on_page(
+                    edit_page_index,
+                    model,
+                    rect,
+                    text,
+                    font_size,
+                    color,
+                )
+                self.mark_dirty()
+                self.annotation_controller.refresh_continuous_page_after_geometry_edit(edit_page_index, model.xref)
+            else:
+                rect = self.pdf_rect_from_scene_rect(scene_rect)
+                self.annotation_controller.update_freetext_annotation_clean_appearance_in_rect_on_page(
+                    self.page_index,
+                    model,
+                    rect,
+                    text,
+                    font_size,
+                    color,
+                )
+                self.mark_dirty()
+                self.refresh_annotation_overlay(preserve_selection=True)
             self.statusBar().showMessage(f"Edited FreeText xref={model.xref}. Use Save to persist.")
             self.log_debug(f"Inline FreeText edited: xref={model.xref} chars={len(text)}")
         except Exception as exc:
@@ -1894,8 +2257,14 @@ class MainWindow(QMainWindow):
         self.record_view_location_before_navigation()
         self.cancel_add_tool()
         self.page_index -= 1
+        if self.view_mode == "continuous":
+            self.scroll_continuous_to_page(self.page_index)
+            self.update_current_recent_page()
+            self.save_active_session_state()
+            return
         self.render_page()
-        self.defer_scroll_to_page_bottom_left()
+        if self.view_mode != "continuous":
+            self.defer_scroll_to_page_bottom_left()
         self.update_current_recent_page()
         self.save_active_session_state()
 
@@ -1905,8 +2274,14 @@ class MainWindow(QMainWindow):
         self.record_view_location_before_navigation()
         self.cancel_add_tool()
         self.page_index += 1
+        if self.view_mode == "continuous":
+            self.scroll_continuous_to_page(self.page_index)
+            self.update_current_recent_page()
+            self.save_active_session_state()
+            return
         self.render_page()
-        self.defer_scroll_to_page_top_left()
+        if self.view_mode != "continuous":
+            self.defer_scroll_to_page_top_left()
         self.update_current_recent_page()
         self.save_active_session_state()
 
@@ -1954,6 +2329,7 @@ class MainWindow(QMainWindow):
             self.log_debug("Exit canceled by unsaved changes prompt")
             event.ignore()
             return
+        self.stop_continuous_scroll_timer()
         self.cancel_add_tool()
         self.update_current_recent_page()
         self.state.navigation.anchor_cache.clear()

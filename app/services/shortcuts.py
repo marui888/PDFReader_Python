@@ -20,6 +20,9 @@ DEFAULT_SHORTCUTS: dict[str, str] = {
     "tool_highlight": "Alt+S",
     "tool_freetext": "Alt+O",
     "tool_text": "Alt+T",
+    "zoom_in": "Ctrl+=",
+    "zoom_out": "Ctrl+-",
+    "toggle_continuous_view": "Alt+V",
     "close_pdf": "Ctrl+W",
     "save_incremental": "Ctrl+S",
 }
@@ -37,6 +40,9 @@ SHORTCUT_LABELS: dict[str, str] = {
     "tool_highlight": "Highlight Mode",
     "tool_freetext": "FreeText Mode",
     "tool_text": "Text Mode",
+    "zoom_in": "Zoom +",
+    "zoom_out": "Zoom -",
+    "toggle_continuous_view": "Continuous View",
     "close_pdf": "Close Current PDF",
     "save_incremental": "Save Incremental",
 }
@@ -94,8 +100,12 @@ def apply_shortcuts(window) -> None:
     set_action_shortcut(window.add_highlight_action, shortcuts["tool_highlight"])
     set_action_shortcut(window.add_typewriter_action, shortcuts["tool_freetext"])
     set_action_shortcut(window.text_mode_action, shortcuts["tool_text"])
+    set_action_shortcut(window.zoom_in_action, shortcuts["zoom_in"])
+    set_action_shortcut(window.zoom_out_action, shortcuts["zoom_out"])
+    set_action_shortcut(window.continuous_view_action, shortcuts["toggle_continuous_view"])
     set_action_shortcut(window.close_action, shortcuts["close_pdf"])
     set_action_shortcut(window.save_incremental_action, shortcuts["save_incremental"])
+    refresh_action_tooltips(window, shortcuts)
 
     for index, color in enumerate(QUICK_HIGHLIGHT_COLORS.values(), start=1):
         shortcut_text = shortcuts.get(f"highlight_color_{index}", "")
@@ -115,3 +125,20 @@ def apply_shortcuts(window) -> None:
 def set_action_shortcut(action, shortcut_text: str) -> None:
     action.setShortcut(QKeySequence(shortcut_text) if shortcut_text else QKeySequence())
     action.setShortcutContext(Qt.ShortcutContext.ApplicationShortcut)
+
+
+def refresh_action_tooltips(window, shortcuts: Mapping[str, str]) -> None:
+    set_action_tooltip(window.text_mode_action, "Text", shortcuts.get("tool_text", ""))
+    set_action_tooltip(window.add_typewriter_action, "FreeText", shortcuts.get("tool_freetext", ""))
+    set_action_tooltip(window.add_rectangle_action, "Square", shortcuts.get("tool_square", ""))
+    set_action_tooltip(window.add_highlight_action, "Highlight", shortcuts.get("tool_highlight", ""))
+    set_action_tooltip(window.add_arrow_action, "Arrow", shortcuts.get("tool_arrow", ""))
+    set_action_tooltip(window.zoom_in_action, "Zoom +", shortcuts.get("zoom_in", ""))
+    set_action_tooltip(window.zoom_out_action, "Zoom -", shortcuts.get("zoom_out", ""))
+    set_action_tooltip(window.continuous_view_action, "Continuous", shortcuts.get("toggle_continuous_view", ""))
+
+
+def set_action_tooltip(action, label: str, shortcut_text: str) -> None:
+    tooltip = f"{label} ({shortcut_text})" if shortcut_text else label
+    action.setToolTip(tooltip)
+    action.setStatusTip(tooltip)

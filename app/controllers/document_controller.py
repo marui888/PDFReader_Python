@@ -9,7 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 import pymupdf as fitz
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import QFileDialog, QMenu
 
 from app.repositories.annotation_repository import AnnotationRepository
@@ -19,6 +19,7 @@ from app.services.pdf_audit import audit_current_page as run_audit_current_page
 from app.services.pdf_audit import format_audit_report
 from app.services.pdf_audit import report_has_errors
 from app.services.pdf_external_tools import backup_pdf_file
+from app.services.icons import dirty_dot_icon
 from app.services.pdf_external_tools import run_qpdf_check
 from app.services.pdf_external_tools import rewrite_pdf_with_qpdf
 
@@ -86,6 +87,7 @@ class DocumentController:
             return
 
         window.cancel_add_tool()
+        window.stop_continuous_scroll_timer()
         window.doc = None
         window.annotation_repo = None
         window.pdf_path = None
@@ -94,6 +96,12 @@ class DocumentController:
         window.clear_undo()
         window.current_annotations = []
         window.clear_annotation_items()
+        window.clear_continuous_page_items()
+        window.clear_continuous_annotation_cache()
+        window.clear_continuous_pixmap_cache()
+        window.continuous_page_layouts = []
+        window.continuous_layout_doc_id = None
+        window.continuous_layout_zoom = None
         window.page_item.setPixmap(QPixmap())
         window.scene.setSceneRect(0, 0, 0, 0)
         window.sync_page_spin()
@@ -140,14 +148,15 @@ class DocumentController:
         window.updating_document_tabs = True
         try:
             window.document_tabs.addTab(self.document_tab_title(session))
-            window.document_tabs.setTabToolTip(window.document_tabs.count() - 1, str(session.path))
+            index = window.document_tabs.count() - 1
+            self.update_document_tab_icon(index, session)
+            window.document_tabs.setTabToolTip(index, str(session.path))
             window.document_tabs.setVisible(window.document_tabs.count() > 0)
         finally:
             window.updating_document_tabs = False
 
     def document_tab_title(self, session: DocumentSession) -> str:
-        prefix = "*" if session.is_dirty else ""
-        return f"{prefix}{self.elided_tab_file_name(session.path.name)}"
+        return self.elided_tab_file_name(session.path.name)
 
     def elided_tab_file_name(self, file_name: str, max_chars: int = 34) -> str:
         if len(file_name) <= max_chars:
@@ -170,7 +179,11 @@ class DocumentController:
             return
         session = window.sessions[index]
         window.document_tabs.setTabText(index, self.document_tab_title(session))
+        self.update_document_tab_icon(index, session)
         window.document_tabs.setTabToolTip(index, str(session.path))
+
+    def update_document_tab_icon(self, index: int, session: DocumentSession) -> None:
+        self.window.document_tabs.setTabIcon(index, dirty_dot_icon() if session.is_dirty else QIcon())
 
     def set_active_session(self, index: int, preserve_selection: bool = False) -> None:
         window = self.window
@@ -203,6 +216,8 @@ class DocumentController:
         session = window.sessions[index]
         window.doc = session.doc
         window.annotation_repo = AnnotationRepository(window.doc)
+        window.clear_continuous_annotation_cache()
+        window.clear_continuous_pixmap_cache()
         window.pdf_path = session.path
         window.page_index = max(0, min(session.page_index, len(window.doc) - 1))
         window.zoom = session.zoom
@@ -426,6 +441,7 @@ class DocumentController:
             window.updating_document_tabs = False
 
         if not window.sessions:
+            window.stop_continuous_scroll_timer()
             window.active_session_index = None
             window.doc = None
             window.annotation_repo = None
@@ -436,6 +452,12 @@ class DocumentController:
             window.clear_undo()
             window.current_annotations = []
             window.clear_annotation_items()
+            window.clear_continuous_page_items()
+            window.clear_continuous_annotation_cache()
+            window.clear_continuous_pixmap_cache()
+            window.continuous_page_layouts = []
+            window.continuous_layout_doc_id = None
+            window.continuous_layout_zoom = None
             window.page_item.setPixmap(QPixmap())
             window.scene.setSceneRect(0, 0, 0, 0)
             window.sync_page_spin()
@@ -700,6 +722,8 @@ class DocumentController:
             raise RuntimeError("The incrementally saved PDF has no readable pages after reopening.")
 
         window.annotation_repo = AnnotationRepository(window.doc)
+        window.clear_continuous_annotation_cache()
+        window.clear_continuous_pixmap_cache()
         window.page_index = max(0, min(page_index, len(window.doc) - 1))
         window.selected_annotation_id = selected_annotation_id
         if window.active_session_index is not None and 0 <= window.active_session_index < len(window.sessions):
@@ -752,6 +776,8 @@ class DocumentController:
                 window.doc = None
                 raise RuntimeError("The rewritten PDF has no readable pages. The backup was kept.")
             window.annotation_repo = AnnotationRepository(window.doc)
+            window.clear_continuous_annotation_cache()
+            window.clear_continuous_pixmap_cache()
             window.pdf_path = current_path
             window.page_index = max(0, min(page_index, len(window.doc) - 1))
             if window.active_session_index is not None and 0 <= window.active_session_index < len(window.sessions):
@@ -770,6 +796,8 @@ class DocumentController:
                     window.doc = fitz.open(current_path)
                     if len(window.doc) > 0:
                         window.annotation_repo = AnnotationRepository(window.doc)
+                        window.clear_continuous_annotation_cache()
+                        window.clear_continuous_pixmap_cache()
                         window.pdf_path = current_path
                         window.page_index = max(0, min(page_index, len(window.doc) - 1))
                         if window.active_session_index is not None and 0 <= window.active_session_index < len(window.sessions):
@@ -849,9 +877,13 @@ class DocumentController:
     def release_current_pdf_for_replace(self) -> None:
         window = self.window
         window.cancel_add_tool()
+        window.stop_continuous_scroll_timer()
         window.selected_annotation_id = None
         window.current_annotations = []
         window.clear_annotation_items()
+        window.clear_continuous_page_items()
+        window.clear_continuous_annotation_cache()
+        window.clear_continuous_pixmap_cache()
         window.page_item.setPixmap(QPixmap())
         window.scene.setSceneRect(0, 0, 0, 0)
         window.refresh_annotations_table()
@@ -879,6 +911,8 @@ class DocumentController:
             window.doc.close()
             window.doc = fitz.open(file_name)
             window.annotation_repo = AnnotationRepository(window.doc)
+            window.clear_continuous_annotation_cache()
+            window.clear_continuous_pixmap_cache()
             window.pdf_path = Path(file_name)
             window.page_index = max(0, min(page_index, len(window.doc) - 1))
             if window.active_session_index is not None and 0 <= window.active_session_index < len(window.sessions):

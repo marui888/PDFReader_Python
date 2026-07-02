@@ -5,24 +5,43 @@ from math import atan2, cos, pi, sin
 from time import perf_counter
 
 import pymupdf as fitz
+from shiboken6 import isValid
 from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QImage, QPixmap, QPolygonF
-from PySide6.QtWidgets import QGraphicsItem
+from PySide6.QtWidgets import QGraphicsItem, QGraphicsPixmapItem
 
 from app.canvas.annotation_items import AnnotationItemRenderer
 from app.models.annotation_model import DRAGGABLE_APP_TYPES, AnnotationModel
+from app.models.continuous_view import PageLayout, PageViewItem
 
 
 class CanvasController:
     def __init__(self, window) -> None:
         self.window = window
 
+    def safe_remove_scene_item(self, item: QGraphicsItem | None) -> None:
+        window = self.window
+        if item is None or getattr(window, "scene", None) is None:
+            return
+        try:
+            if not isValid(window.scene) or not isValid(item):
+                return
+            if item.scene() is window.scene:
+                window.scene.removeItem(item)
+        except RuntimeError:
+            return
+
     def render_page(self, preserve_selection: bool = False, keep_view_position: bool = False) -> None:
         window = self.window
         if window.doc is None:
             return
+        if window.view_mode == "continuous":
+            self.render_continuous_view(keep_view_position=keep_view_position)
+            return
 
         started_at = perf_counter()
+        self.clear_continuous_page_items()
+        window.page_item.setVisible(True)
         horizontal_value = window.view.horizontalScrollBar().value()
         vertical_value = window.view.verticalScrollBar().value()
         window.text_lines_cache_page_index = None
@@ -79,6 +98,651 @@ class CanvasController:
             f"overlay={overlay_ms:.1f}ms view={view_ms:.1f}ms ui={ui_ms:.1f}ms"
         )
 
+    def render_continuous_view(self, keep_view_position: bool = False) -> None:
+        window = self.window
+        if window.doc is None:
+            return
+
+        started_at = perf_counter()
+        horizontal_value = window.view.horizontalScrollBar().value()
+        vertical_value = window.view.verticalScrollBar().value()
+        window.page_item.setVisible(False)
+        self.clear_annotation_items()
+        window.current_annotations = self.continuous_load_page_annotations(window.page_index)
+
+        layout_started_at = perf_counter()
+        self.build_continuous_page_layouts()
+        layout_ms = (perf_counter() - layout_started_at) * 1000
+
+        scene_rect = self.continuous_scene_rect()
+        window.scene.setSceneRect(scene_rect)
+
+        if keep_view_position:
+            window.view.horizontalScrollBar().setValue(horizontal_value)
+            window.view.verticalScrollBar().setValue(vertical_value)
+        else:
+            layout = self.continuous_layout_for_page(window.page_index)
+            if layout is not None:
+                window.view.horizontalScrollBar().setValue(window.view.horizontalScrollBar().minimum())
+                window.view.verticalScrollBar().setValue(int(layout.y_top))
+
+        render_started_at = perf_counter()
+        self.render_visible_continuous_pages()
+        render_ms = (perf_counter() - render_started_at) * 1000
+
+        ui_started_at = perf_counter()
+        window.update_window_title()
+        window.show_page_status()
+        window.refresh_annotations_table()
+        window.sync_page_spin()
+        window.refresh_navigation()
+        window.update_actions()
+        if hasattr(window.view, "reset_boundary_turn_state"):
+            window.view.reset_boundary_turn_state(clear_status=False)
+        window.clear_scroll_boundary_status()
+        window.save_active_session_state()
+        ui_ms = (perf_counter() - ui_started_at) * 1000
+        total_ms = (perf_counter() - started_at) * 1000
+        window.log_debug(
+            "Render continuous perf: "
+            f"page={window.page_index + 1} total={total_ms:.1f}ms "
+            f"layout={layout_ms:.1f}ms render={render_ms:.1f}ms ui={ui_ms:.1f}ms "
+            f"items={len(window.continuous_page_items)}"
+        )
+
+    def build_continuous_page_layouts(self) -> None:
+        window = self.window
+        if window.doc is None:
+            window.continuous_page_layouts = []
+            self.clear_continuous_annotation_cache()
+            self.clear_continuous_pixmap_cache()
+            return
+        if window.continuous_layout_doc_id is not None and window.continuous_layout_doc_id != id(window.doc):
+            self.clear_continuous_annotation_cache()
+            self.clear_continuous_pixmap_cache()
+        if window.continuous_layout_zoom is not None and window.continuous_layout_zoom != window.zoom:
+            self.clear_continuous_pixmap_cache()
+        if (
+            window.continuous_page_layouts
+            and window.continuous_layout_doc_id == id(window.doc)
+            and window.continuous_layout_zoom == window.zoom
+        ):
+            return
+
+        page_sizes: list[tuple[float, float]] = []
+        max_width = 0.0
+        for page_index in range(len(window.doc)):
+            rect = window.doc[page_index].rect
+            width = rect.width * window.zoom
+            height = rect.height * window.zoom
+            page_sizes.append((width, height))
+            max_width = max(max_width, width)
+
+        layouts: list[PageLayout] = []
+        y = window.continuous_page_gap
+        for page_index, (width, height) in enumerate(page_sizes):
+            x = window.continuous_page_gap + (max_width - width) / 2
+            scene_rect = QRectF(x, y, width, height)
+            layouts.append(
+                PageLayout(
+                    page_index=page_index,
+                    page_width=width,
+                    page_height=height,
+                    scene_rect=scene_rect,
+                    y_top=y,
+                    y_bottom=y + height,
+                )
+            )
+            y += height + window.continuous_page_gap
+
+        window.continuous_page_layouts = layouts
+        window.continuous_layout_doc_id = id(window.doc)
+        window.continuous_layout_zoom = window.zoom
+        self.clear_continuous_page_items()
+        window.log_debug(
+            f"Continuous layout built: pages={len(layouts)} zoom={window.zoom:.2f} "
+            f"scene_width={max_width + window.continuous_page_gap * 2:.1f} scene_height={y:.1f}"
+        )
+
+    def continuous_load_page_annotations(self, page_index: int) -> list[AnnotationModel]:
+        window = self.window
+        cache = getattr(window, "continuous_annotation_cache", None)
+        if cache is None:
+            return window.load_page_annotations(page_index)
+        if page_index not in cache:
+            cache[page_index] = window.load_page_annotations(page_index)
+        return cache[page_index]
+
+    def invalidate_continuous_annotation_cache(self, page_index: int | None = None) -> None:
+        cache = getattr(self.window, "continuous_annotation_cache", None)
+        if cache is None:
+            return
+        if page_index is None:
+            cache.clear()
+            return
+        cache.pop(page_index, None)
+
+    def clear_continuous_annotation_cache(self) -> None:
+        self.invalidate_continuous_annotation_cache(None)
+
+    def continuous_pixmap_for_page(self, page_index: int) -> tuple[QPixmap, bool]:
+        window = self.window
+        cache = getattr(window, "continuous_pixmap_cache", None)
+        if cache is not None and page_index in cache:
+            pixmap = cache.pop(page_index)
+            cache[page_index] = pixmap
+            return pixmap, True
+
+        page = window.doc[page_index]
+        matrix = fitz.Matrix(window.zoom, window.zoom)
+        pix = page.get_pixmap(matrix=matrix, alpha=False, annots=False)
+        image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888).copy()
+        pixmap = QPixmap.fromImage(image)
+        if cache is not None:
+            cache[page_index] = pixmap
+            limit = max(1, int(getattr(window, "continuous_pixmap_cache_limit", 12)))
+            while len(cache) > limit:
+                cache.pop(next(iter(cache)))
+        return pixmap, False
+
+    def clear_continuous_pixmap_cache(self) -> None:
+        cache = getattr(self.window, "continuous_pixmap_cache", None)
+        if cache is not None:
+            cache.clear()
+
+    def continuous_scene_rect(self) -> QRectF:
+        window = self.window
+        if not window.continuous_page_layouts:
+            return QRectF(0, 0, 0, 0)
+        max_right = max(layout.scene_rect.right() for layout in window.continuous_page_layouts)
+        max_bottom = max(layout.scene_rect.bottom() for layout in window.continuous_page_layouts)
+        return QRectF(0, 0, max_right + window.continuous_page_gap, max_bottom + window.continuous_page_gap)
+
+    def continuous_layout_for_page(self, page_index: int) -> PageLayout | None:
+        window = self.window
+        if page_index < 0 or page_index >= len(window.continuous_page_layouts):
+            return None
+        return window.continuous_page_layouts[page_index]
+
+    def continuous_scene_rect_for_pdf_rect(self, page_index: int, rect: fitz.Rect) -> QRectF:
+        layout = self.continuous_layout_for_page(page_index)
+        if layout is None:
+            return QRectF()
+        return QRectF(
+            layout.scene_rect.x() + rect.x0 * self.window.zoom,
+            layout.scene_rect.y() + rect.y0 * self.window.zoom,
+            rect.width * self.window.zoom,
+            rect.height * self.window.zoom,
+        )
+
+    def continuous_scene_point_for_pdf_point(self, page_index: int, point: tuple[float, float]) -> QPointF:
+        layout = self.continuous_layout_for_page(page_index)
+        if layout is None:
+            return QPointF()
+        return QPointF(
+            layout.scene_rect.x() + point[0] * self.window.zoom,
+            layout.scene_rect.y() + point[1] * self.window.zoom,
+        )
+
+    def capture_view_mode_anchor(self) -> dict | None:
+        window = self.window
+        if window.doc is None:
+            return None
+        viewport_rect = window.view.viewport().rect()
+        if viewport_rect.isEmpty():
+            return None
+        viewport_center = viewport_rect.center()
+        scene_center = window.view.mapToScene(viewport_center)
+
+        if window.view_mode == "continuous":
+            self.build_continuous_page_layouts()
+            visible_pages = self.visible_continuous_page_indexes()
+            page_index = self.continuous_page_index_at_scene_pos(scene_center)
+            if page_index is None:
+                page_index = self.current_page_index_from_continuous_view()
+            if page_index is None:
+                page_index = window.page_index
+            layout = self.continuous_layout_for_page(page_index)
+            if layout is None:
+                return None
+            pdf_x = (scene_center.x() - layout.scene_rect.x()) / window.zoom
+            pdf_y = (scene_center.y() - layout.scene_rect.y()) / window.zoom
+        else:
+            page_index = window.page_index
+            pdf_x, pdf_y = self.pdf_point_from_scene_point(scene_center)
+            visible_pages = {page_index}
+
+        page_rect = window.doc[page_index].rect
+        return {
+            "mode": window.view_mode,
+            "page_index": page_index,
+            "pdf_x": max(page_rect.x0, min(pdf_x, page_rect.x1)),
+            "pdf_y": max(page_rect.y0, min(pdf_y, page_rect.y1)),
+            "visible_page_count": len(visible_pages),
+            "zoom": window.zoom,
+        }
+
+    def continuous_page_index_at_scene_pos(self, scene_pos: QPointF) -> int | None:
+        for layout in self.window.continuous_page_layouts:
+            if layout.scene_rect.contains(scene_pos):
+                return layout.page_index
+        return None
+
+    def fit_zoom_for_page(self, page_index: int) -> float:
+        window = self.window
+        if window.doc is None:
+            return window.zoom
+        page_index = max(0, min(page_index, len(window.doc) - 1))
+        page_rect = window.doc[page_index].rect
+        viewport_size = window.view.viewport().size()
+        available_width = max(1.0, viewport_size.width() - 24.0)
+        available_height = max(1.0, viewport_size.height() - 24.0)
+        fit_zoom = min(available_width / page_rect.width, available_height / page_rect.height)
+        return max(0.5, min(4.0, fit_zoom))
+
+    def restore_view_mode_anchor(self, anchor: dict | None) -> None:
+        window = self.window
+        if window.doc is None or not anchor:
+            return
+        page_index = max(0, min(int(anchor.get("page_index", window.page_index)), len(window.doc) - 1))
+        point = (float(anchor.get("pdf_x", 0.0)), float(anchor.get("pdf_y", 0.0)))
+        window.page_index = page_index
+
+        if window.view_mode == "continuous":
+            self.build_continuous_page_layouts()
+            window.scene.setSceneRect(self.continuous_scene_rect())
+            scene_point = self.continuous_scene_point_for_pdf_point(page_index, point)
+            window.continuous_suppress_scroll_sync = True
+            try:
+                window.view.centerOn(scene_point)
+            finally:
+                window.continuous_suppress_scroll_sync = False
+            window.current_annotations = self.continuous_load_page_annotations(window.page_index)
+            self.render_visible_continuous_pages()
+            self.refresh_continuous_current_page_ui()
+        else:
+            scene_point = self.scene_point(point)
+            window.view.centerOn(scene_point)
+
+        window.log_debug(
+            "View mode anchor restored: "
+            f"mode={window.view_mode} page={page_index + 1} "
+            f"pdf=({point[0]:.1f},{point[1]:.1f}) zoom={window.zoom:.2f}"
+        )
+
+    def render_visible_continuous_pages(self) -> None:
+        window = self.window
+        if window.doc is None or not window.continuous_page_layouts:
+            return
+        if getattr(window, "scene", None) is None or not isValid(window.scene):
+            return
+
+        visible_indexes = self.visible_continuous_page_indexes()
+        if not visible_indexes:
+            visible_indexes = {window.page_index}
+
+        first_index = max(0, min(visible_indexes) - window.continuous_cache_radius)
+        last_index = min(len(window.continuous_page_layouts) - 1, max(visible_indexes) + window.continuous_cache_radius)
+        target_indexes = set(range(first_index, last_index + 1))
+        before_items = set(window.continuous_page_items)
+
+        for page_index in sorted(target_indexes):
+            self.ensure_continuous_page_rendered(page_index)
+
+        for page_index in list(window.continuous_page_items):
+            if page_index not in target_indexes:
+                self.unload_continuous_page(page_index)
+        after_items = set(window.continuous_page_items)
+        loaded_items = sorted(after_items - before_items)
+        unloaded_items = sorted(before_items - after_items)
+        if loaded_items or unloaded_items:
+            window.log_debug(
+                "Continuous cache update: "
+                f"visible={[index + 1 for index in sorted(visible_indexes)]} "
+                f"cached={first_index + 1}-{last_index + 1} "
+                f"loaded={[index + 1 for index in loaded_items]} "
+                f"unloaded={[index + 1 for index in unloaded_items]}"
+            )
+
+    def visible_continuous_page_indexes(self) -> set[int]:
+        window = self.window
+        viewport_rect = window.view.mapToScene(window.view.viewport().rect()).boundingRect()
+        indexes: set[int] = set()
+        for layout in window.continuous_page_layouts:
+            if layout.scene_rect.intersects(viewport_rect):
+                indexes.add(layout.page_index)
+        return indexes
+
+    def ensure_continuous_page_rendered(self, page_index: int) -> None:
+        window = self.window
+        if window.doc is None:
+            return
+        if page_index in window.continuous_page_items:
+            return
+
+        layout = self.continuous_layout_for_page(page_index)
+        if layout is None:
+            return
+
+        page_started_at = perf_counter()
+        pixmap_item = None
+        pixmap_ms = 0.0
+        try:
+            pixmap_started_at = perf_counter()
+            pixmap, pixmap_cache_hit = self.continuous_pixmap_for_page(page_index)
+            pixmap_item = QGraphicsPixmapItem(pixmap)
+            pixmap_item.setZValue(0)
+            pixmap_item.setPos(layout.scene_rect.topLeft())
+            pixmap_item.setData(10, page_index)
+            window.scene.addItem(pixmap_item)
+            pixmap_ms = (perf_counter() - pixmap_started_at) * 1000
+        except Exception as exc:
+            window.log_debug(f"Continuous page pixmap failed: page={page_index + 1} error={exc}")
+            return
+
+        (
+            annotation_items,
+            annotation_model_ids,
+            annotation_count,
+            supported_count,
+            unsupported_count,
+            annotation_read_ms,
+            overlay_ms,
+            annotation_error,
+        ) = self.render_continuous_page_annotations(page_index, layout)
+        total_ms = (perf_counter() - page_started_at) * 1000
+        window.continuous_page_items[page_index] = PageViewItem(
+            page_index=page_index,
+            pixmap_item=pixmap_item,
+            annotation_items=annotation_items,
+            annotation_model_ids=annotation_model_ids,
+            is_rendered=True,
+            annotation_count=annotation_count,
+            supported_annotation_count=supported_count,
+            unsupported_annotation_count=unsupported_count,
+            pixmap_ms=pixmap_ms,
+            annotation_read_ms=annotation_read_ms,
+            overlay_ms=overlay_ms,
+            total_ms=total_ms,
+            annotation_error=annotation_error,
+        )
+        if total_ms >= 25 or annotation_error:
+            window.log_debug(
+                "Continuous page rendered: "
+                f"page={page_index + 1} total={total_ms:.1f}ms pixmap={pixmap_ms:.1f}ms "
+                f"annotation_read={annotation_read_ms:.1f}ms overlay={overlay_ms:.1f}ms "
+                f"annotations={annotation_count} supported={supported_count} unsupported={unsupported_count}"
+                + (" pixmap_cache=hit" if pixmap_cache_hit else "")
+                + (f" error={annotation_error}" if annotation_error else "")
+            )
+
+    def render_continuous_page_annotations(
+        self, page_index: int, layout: PageLayout
+    ) -> tuple[list[QGraphicsItem], list[str], int, int, int, float, float, str | None]:
+        window = self.window
+        annotation_read_started_at = perf_counter()
+        annotation_error = None
+        try:
+            models = self.continuous_load_page_annotations(page_index)
+        except Exception as exc:
+            models = []
+            annotation_error = str(exc)
+            window.log_debug(f"Continuous annotation read failed: page={page_index + 1} error={exc}")
+        annotation_read_ms = (perf_counter() - annotation_read_started_at) * 1000
+
+        annotation_count = len(models)
+        supported_count = sum(1 for model in models if model.is_supported)
+        unsupported_count = annotation_count - supported_count
+        annotation_items: list[QGraphicsItem] = []
+        annotation_model_ids: list[str] = []
+
+        def register_readonly_item(item: QGraphicsItem, model: AnnotationModel) -> None:
+            item.setZValue(10)
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            item.setData(0, model.id)
+            item.setData(10, page_index)
+            annotation_items.append(item)
+
+        def register_readonly_hit_item(item: QGraphicsItem, model: AnnotationModel) -> None:
+            item.setZValue(11)
+            item.setOpacity(0.01)
+            item.setFlag(QGraphicsItem.GraphicsItemFlag.ItemIsSelectable, False)
+            item.setAcceptedMouseButtons(Qt.MouseButton.NoButton)
+            item.setData(0, model.id)
+            item.setData(10, page_index)
+            annotation_items.append(item)
+
+        overlay_started_at = perf_counter()
+        renderer = AnnotationItemRenderer(
+            window.scene,
+            window.zoom,
+            window.default_freetext_font_size,
+            window.default_highlight_opacity,
+            register_readonly_item,
+            register_readonly_hit_item,
+            scene_offset=layout.scene_rect.topLeft(),
+            render_hit_items=True,
+        )
+        for model in models:
+            if not model.is_supported:
+                continue
+            try:
+                window.annotation_model_map[model.id] = model
+                annotation_model_ids.append(model.id)
+                renderer.render(model)
+            except Exception as exc:
+                annotation_error = str(exc)
+                window.log_debug(
+                    f"Continuous annotation overlay failed: page={page_index + 1} "
+                    f"xref={model.xref} type={model.pdf_type} error={exc}"
+                )
+        overlay_ms = (perf_counter() - overlay_started_at) * 1000
+        return (
+            annotation_items,
+            annotation_model_ids,
+            annotation_count,
+            supported_count,
+            unsupported_count,
+            annotation_read_ms,
+            overlay_ms,
+            annotation_error,
+        )
+
+    def unload_continuous_page(self, page_index: int) -> None:
+        window = self.window
+        item = window.continuous_page_items.pop(page_index, None)
+        if item is None:
+            return
+        if window.selected_annotation_id in (item.annotation_model_ids or []):
+            window.select_annotation(None)
+        for annotation_item in item.annotation_items or []:
+            self.safe_remove_scene_item(annotation_item)
+        for model_id in item.annotation_model_ids or []:
+            if model_id != window.selected_annotation_id:
+                window.annotation_model_map.pop(model_id, None)
+        if item.pixmap_item is not None:
+            self.safe_remove_scene_item(item.pixmap_item)
+        if (item.annotation_items or []) or item.annotation_count:
+            window.log_debug(
+                f"Continuous page unloaded: page={page_index + 1} "
+                f"overlay_items={len(item.annotation_items or [])} annotations={item.annotation_count}"
+            )
+
+    def clear_continuous_page_items(self) -> None:
+        window = self.window
+        for item in list(getattr(window, "continuous_page_items", {}).values()):
+            for annotation_item in item.annotation_items or []:
+                self.safe_remove_scene_item(annotation_item)
+            for model_id in item.annotation_model_ids or []:
+                window.annotation_model_map.pop(model_id, None)
+            if item.pixmap_item is not None:
+                self.safe_remove_scene_item(item.pixmap_item)
+        window.continuous_page_items.clear()
+
+    def on_view_scrolled(self) -> None:
+        window = self.window
+        if window.doc is None or window.view_mode != "continuous":
+            return
+        if getattr(window, "continuous_suppress_scroll_sync", False):
+            return
+        if getattr(window, "scene", None) is None or not isValid(window.scene):
+            return
+        self.render_visible_continuous_pages()
+        new_page_index = self.current_page_index_from_continuous_view()
+        if new_page_index is not None and new_page_index != window.page_index:
+            window.page_index = new_page_index
+            window.current_annotations = self.continuous_load_page_annotations(window.page_index)
+            window.update_window_title()
+            window.show_page_status()
+            window.sync_page_spin()
+            window.refresh_annotations_table()
+            window.refresh_navigation()
+            window.save_active_session_state()
+        self.clear_continuous_selection_if_not_visible()
+
+    def current_page_index_from_continuous_view(self) -> int | None:
+        window = self.window
+        if not window.continuous_page_layouts:
+            return None
+        viewport_rect = window.view.mapToScene(window.view.viewport().rect()).boundingRect()
+        center_y = viewport_rect.center().y()
+        best_index = window.page_index
+        best_distance = float("inf")
+        for layout in window.continuous_page_layouts:
+            if layout.y_top <= center_y <= layout.y_bottom:
+                return layout.page_index
+            distance = min(abs(center_y - layout.y_top), abs(center_y - layout.y_bottom))
+            if distance < best_distance:
+                best_index = layout.page_index
+                best_distance = distance
+        return best_index
+
+    def scroll_continuous_to_page(self, page_index: int) -> None:
+        window = self.window
+        if window.doc is None:
+            return
+        page_index = max(0, min(page_index, len(window.doc) - 1))
+        self.build_continuous_page_layouts()
+        window.scene.setSceneRect(self.continuous_scene_rect())
+        layout = self.continuous_layout_for_page(page_index)
+        if layout is None:
+            return
+        window.page_index = page_index
+        window.current_annotations = self.continuous_load_page_annotations(window.page_index)
+        window.view.horizontalScrollBar().setValue(window.view.horizontalScrollBar().minimum())
+        window.view.verticalScrollBar().setValue(int(layout.y_top))
+        self.render_visible_continuous_pages()
+        self.refresh_continuous_current_page_ui()
+
+    def scroll_continuous_to_xref(self, page_index: int, xref: int) -> bool:
+        window = self.window
+        if window.doc is None:
+            return False
+        page_index = max(0, min(page_index, len(window.doc) - 1))
+        self.build_continuous_page_layouts()
+        window.scene.setSceneRect(self.continuous_scene_rect())
+        models = self.continuous_load_page_annotations(page_index)
+        target_model = next((model for model in models if model.xref == xref), None)
+        if target_model is None:
+            self.scroll_continuous_to_page(page_index)
+            return False
+
+        target_rect = self.continuous_scene_rect_for_pdf_rect(page_index, target_model.rect)
+        window.page_index = page_index
+        window.current_annotations = models
+        window.view.horizontalScrollBar().setValue(max(0, int(target_rect.left()) - 40))
+        window.view.verticalScrollBar().setValue(max(0, int(target_rect.top()) - 80))
+        self.render_visible_continuous_pages()
+        self.refresh_continuous_current_page_ui()
+        return True
+
+    def scroll_continuous_rect_into_view(self, page_index: int, rect: fitz.Rect, margin: int = 40) -> None:
+        window = self.window
+        if window.doc is None:
+            return
+        page_index = max(0, min(page_index, len(window.doc) - 1))
+        self.build_continuous_page_layouts()
+        window.scene.setSceneRect(self.continuous_scene_rect())
+        target_rect = self.continuous_scene_rect_for_pdf_rect(page_index, rect)
+        viewport_rect = window.view.mapToScene(window.view.viewport().rect()).boundingRect()
+        horizontal = window.view.horizontalScrollBar()
+        vertical = window.view.verticalScrollBar()
+
+        next_x = horizontal.value()
+        if target_rect.left() < viewport_rect.left() + margin:
+            next_x += int(target_rect.left() - viewport_rect.left() - margin)
+        elif target_rect.right() > viewport_rect.right() - margin:
+            next_x += int(target_rect.right() - viewport_rect.right() + margin)
+
+        next_y = vertical.value()
+        if target_rect.top() < viewport_rect.top() + margin:
+            next_y += int(target_rect.top() - viewport_rect.top() - margin)
+        elif target_rect.bottom() > viewport_rect.bottom() - margin:
+            next_y += int(target_rect.bottom() - viewport_rect.bottom() + margin)
+
+        window.continuous_suppress_scroll_sync = True
+        try:
+            horizontal.setValue(max(horizontal.minimum(), min(horizontal.maximum(), next_x)))
+            vertical.setValue(max(vertical.minimum(), min(vertical.maximum(), next_y)))
+        finally:
+            window.continuous_suppress_scroll_sync = False
+        self.render_visible_continuous_pages()
+
+    def continuous_annotation_scene_rect(self, model: AnnotationModel) -> QRectF:
+        if model.app_type == "arrow":
+            start = model.line_start or (model.rect.x0, model.rect.y0)
+            end = model.line_end or (model.rect.x1, model.rect.y1)
+            start_point = self.continuous_scene_point_for_pdf_point(model.page_index, start)
+            end_point = self.continuous_scene_point_for_pdf_point(model.page_index, end)
+            return QRectF(start_point, end_point).normalized()
+        return self.continuous_scene_rect_for_pdf_rect(model.page_index, model.rect)
+
+    def continuous_annotation_is_visible(self, model: AnnotationModel, margin: int = 8) -> bool:
+        window = self.window
+        if not window.continuous_page_layouts:
+            return False
+        viewport_rect = window.view.mapToScene(window.view.viewport().rect()).boundingRect()
+        target_rect = self.continuous_annotation_scene_rect(model)
+        return viewport_rect.adjusted(-margin, -margin, margin, margin).intersects(target_rect)
+
+    def clear_continuous_selection_if_not_visible(self) -> None:
+        window = self.window
+        if window.selected_annotation_id is None:
+            return
+        model = window.annotation_model_map.get(window.selected_annotation_id)
+        if model is None or not self.continuous_annotation_is_visible(model):
+            window.select_annotation(None)
+
+    def refresh_continuous_current_page_ui(self) -> None:
+        window = self.window
+        window.update_window_title()
+        window.show_page_status()
+        window.sync_page_spin()
+        window.refresh_annotations_table()
+        window.refresh_navigation()
+        window.update_actions()
+        window.save_active_session_state()
+
+    def select_continuous_annotation_at_scene_pos(self, scene_pos: QPointF) -> bool:
+        window = self.window
+        if window.doc is None or window.view_mode != "continuous":
+            return False
+        for item in window.scene.items(scene_pos):
+            annotation_id = item.data(0)
+            if not annotation_id or annotation_id not in window.annotation_model_map:
+                continue
+            model = window.annotation_model_map[annotation_id]
+            if not model.is_supported:
+                continue
+            if model.page_index != window.page_index:
+                window.page_index = model.page_index
+                window.current_annotations = self.continuous_load_page_annotations(window.page_index)
+            window.select_annotation(annotation_id, center_on=False)
+            return True
+        window.select_annotation(None)
+        return True
+
     def render_annotation_overlay(self) -> None:
         window = self.window
         self.clear_annotation_items()
@@ -122,7 +786,7 @@ class CanvasController:
             window.annotation_controller.clear_text_selection()
         window.clear_selection_items()
         for item in window.annotation_items:
-            window.scene.removeItem(item)
+            self.safe_remove_scene_item(item)
         window.annotation_items.clear()
         window.annotation_item_map.clear()
         window.annotation_model_map.clear()

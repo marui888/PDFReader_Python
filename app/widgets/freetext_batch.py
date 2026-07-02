@@ -145,6 +145,22 @@ class FreeTextBatchWidget(QWidget):
         self.table.setRowCount(0)
         self.status_label.setText(message)
 
+    def set_read_only(self, read_only: bool) -> None:
+        for widget in (
+            self.replace_input,
+            self.replace_selected_button,
+            self.replace_all_button,
+            self.add_input,
+            self.add_mode_combo,
+            self.add_selected_button,
+            self.delete_selected_button,
+            self.delete_selected_annotation_button,
+            self.delete_all_annotations_button,
+        ):
+            widget.setEnabled(not read_only)
+        if read_only:
+            self.status_label.setText("Continuous view is read-only. Batch FreeText editing is disabled.")
+
     def emit_result_activated(self) -> None:
         row = self.selected_row()
         if row is None or row < 0 or row >= len(self.results):

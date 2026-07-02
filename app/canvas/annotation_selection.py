@@ -10,9 +10,11 @@ from app.models.annotation_model import AnnotationModel
 
 
 class AnnotationSelectionRenderer:
-    def __init__(self, scene: QGraphicsScene, zoom: float) -> None:
+    def __init__(self, scene: QGraphicsScene, zoom: float, scene_offset: QPointF | None = None, read_only: bool = False) -> None:
         self.scene = scene
         self.zoom = zoom
+        self.scene_offset = scene_offset or QPointF(0, 0)
+        self.read_only = read_only
         self.items: list[QGraphicsItem] = []
 
     def draw(self, model: AnnotationModel) -> list[QGraphicsItem]:
@@ -43,12 +45,14 @@ class AnnotationSelectionRenderer:
         color = self.pdf_color(model.color, QColor(255, 0, 0))
         width = max(1.0, (model.border_width or 1.0) * self.zoom)
         self.draw_rect_selection(rect, color, width, model)
-        self.add_rect_resize_handles(rect, model)
+        if not self.read_only:
+            self.add_rect_resize_handles(rect, model)
 
     def draw_freetext_selection(self, model: AnnotationModel) -> None:
         rect = self.scene_rect(model.rect)
         self.draw_rect_selection(rect, QColor(0, 0, 0), 1.2, model)
-        self.add_rect_resize_handles(rect, model)
+        if not self.read_only:
+            self.add_rect_resize_handles(rect, model)
 
     def add_rect_resize_handles(self, rect: QRectF, model: AnnotationModel) -> None:
         size = max(6.0, 5.0 * self.zoom)
@@ -104,7 +108,8 @@ class AnnotationSelectionRenderer:
             self.add_selection_arrow_head_lines(end, start, size, pen)
         if end_arrow:
             self.add_selection_arrow_head_lines(start, end, size, pen)
-        self.add_endpoint_handles(model, start, end, QColor(0, 0, 0))
+        if not self.read_only:
+            self.add_endpoint_handles(model, start, end, QColor(0, 0, 0))
 
     def add_selection_arrow_head_lines(self, start: QPointF, end: QPointF, size: float, pen: QPen) -> None:
         left, right = self.arrow_head_points(start, end, size)
@@ -130,14 +135,14 @@ class AnnotationSelectionRenderer:
 
     def scene_rect(self, rect: fitz.Rect) -> QRectF:
         return QRectF(
-            rect.x0 * self.zoom,
-            rect.y0 * self.zoom,
+            self.scene_offset.x() + rect.x0 * self.zoom,
+            self.scene_offset.y() + rect.y0 * self.zoom,
             rect.width * self.zoom,
             rect.height * self.zoom,
         )
 
     def scene_point(self, point: tuple[float, float]) -> QPointF:
-        return QPointF(point[0] * self.zoom, point[1] * self.zoom)
+        return QPointF(self.scene_offset.x() + point[0] * self.zoom, self.scene_offset.y() + point[1] * self.zoom)
 
     def pdf_color(self, color: tuple | None, fallback: QColor) -> QColor:
         if not color:

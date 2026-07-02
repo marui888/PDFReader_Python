@@ -9,6 +9,7 @@ from app.services.shortcuts import merged_shortcuts
 class AppSettings:
     use_foxit_freetext: bool = False
     use_popup_freetext_input: bool = False
+    use_graphics_freetext_editor: bool = True
     freetext_font_size_min: int = 4
     freetext_font_size_max: int = 20
     default_freetext_font_size: int = 7
@@ -41,6 +42,9 @@ def load_settings(path: Path, max_recent_files: int = 10) -> AppSettings:
     settings.use_foxit_freetext = bool(data.get("use_foxit_freetext", settings.use_foxit_freetext))
     settings.use_popup_freetext_input = bool(
         data.get("use_popup_freetext_input", settings.use_popup_freetext_input)
+    )
+    settings.use_graphics_freetext_editor = bool(
+        data.get("use_graphics_freetext_editor", settings.use_graphics_freetext_editor)
     )
     settings.extract_highlight_text_on_reindex = bool(
         data.get("extract_highlight_text_on_reindex", settings.extract_highlight_text_on_reindex)
@@ -101,6 +105,7 @@ def save_settings(path: Path, settings: AppSettings) -> None:
         "search_page_size": settings.search_page_size,
         "shortcuts": dict(settings.shortcuts),
         "use_foxit_freetext": settings.use_foxit_freetext,
+        "use_graphics_freetext_editor": settings.use_graphics_freetext_editor,
         "use_popup_freetext_input": settings.use_popup_freetext_input,
     }
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")

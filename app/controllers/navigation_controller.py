@@ -63,6 +63,11 @@ class NavigationController:
         window.record_view_location_before_navigation()
         window.page_index = target_index
         window.cancel_add_tool()
+        if window.view_mode == "continuous":
+            window.scroll_continuous_to_page(target_index)
+            window.update_current_recent_page()
+            window.save_active_session_state()
+            return
         window.render_page()
         window.defer_scroll_to_page_top_left()
         window.update_current_recent_page()
@@ -79,6 +84,17 @@ class NavigationController:
         window.record_view_location_before_navigation()
         window.page_index = target_index
         window.cancel_add_tool()
+        if window.view_mode == "continuous":
+            found = window.scroll_continuous_to_xref(target_index, int(xref))
+            window.update_current_recent_page()
+            window.save_active_session_state()
+            if found:
+                window.statusBar().showMessage(f"Jumped to anchor on page {window.page_index + 1}.")
+            else:
+                window.statusBar().showMessage(
+                    f"Anchor page opened, but annotation xref={xref} was not found."
+                )
+            return
         window.render_page()
         selected = window.select_annotation_by_xref(int(xref), render_page=False)
         if not selected:
@@ -92,6 +108,9 @@ class NavigationController:
 
     def insert_anchor_reference(self, reference: str) -> None:
         window = self.window
+        if getattr(window, "view_mode", "single") == "continuous":
+            main_window_dialogs.show_information(window, "Insert Ref", "Switch to Single Page to edit annotations.")
+            return
         if not self.can_insert_anchor_reference():
             main_window_dialogs.show_information(window, "Insert Ref", "Select a FreeText annotation first.")
             return
@@ -115,40 +134,47 @@ class NavigationController:
         return model
 
     def add_serial_number_to_selected_freetext(self) -> None:
-        window = self.window
         model = self.selected_freetext_model()
         if model is None:
-            main_window_dialogs.show_information(window, "Add Serial Number", "Select a FreeText annotation first.")
+            main_window_dialogs.show_information(self.window, "Add Serial Number", "Select a FreeText annotation first.")
             return
         if is_anchor_text(model.text):
             return
 
-        number = self.next_serial_number_for_current_page()
+        number = self.next_serial_number_for_page(model.page_index)
         text = add_serial_prefix(model.text, number)
         self.update_selected_freetext_text(model, text, "Added serial number")
 
     def remove_serial_number_from_selected_freetext(self) -> None:
-        window = self.window
         model = self.selected_freetext_model()
         if model is None:
-            main_window_dialogs.show_information(window, "Remove Serial Number", "Select a FreeText annotation first.")
+            main_window_dialogs.show_information(self.window, "Remove Serial Number", "Select a FreeText annotation first.")
             return
         if not is_anchor_text(model.text):
             return
 
         text = remove_serial_prefix(model.text)
         if not text.strip():
-            main_window_dialogs.show_warning(window, "Remove Serial Number", "FreeText annotation text cannot be empty.")
+            main_window_dialogs.show_warning(self.window, "Remove Serial Number", "FreeText annotation text cannot be empty.")
             return
         self.update_selected_freetext_text(model, text, "Removed serial number")
 
     def next_serial_number_for_current_page(self) -> int:
+        return self.next_serial_number_for_page(self.window.page_index)
+
+    def next_serial_number_for_page(self, page_index: int) -> int:
         window = self.window
+        if getattr(window, "view_mode", "single") == "continuous":
+            models = window.canvas_controller.continuous_load_page_annotations(page_index)
+        elif page_index == window.page_index:
+            models = window.current_annotations
+        else:
+            models = window.load_page_annotations(page_index)
         used = {
             value
             for value in (
                 serial_number(model.text)
-                for model in window.current_annotations
+                for model in models
                 if model.app_type == "freetext"
             )
             if value is not None
@@ -168,10 +194,17 @@ class NavigationController:
                 model.color or (1, 0, 0),
             )
             window.mark_dirty()
-            window.render_page(preserve_selection=True, keep_view_position=True)
+            window.navigation_anchor_dirty = True
+            if getattr(window, "view_mode", "single") == "continuous":
+                window.annotation_controller.refresh_continuous_page_after_geometry_edit(model.page_index, model.xref)
+            else:
+                window.render_page(preserve_selection=True, keep_view_position=True)
             window.statusBar().showMessage(f"{status} xref={model.xref}. Use Save to persist.")
         except Exception as exc:
-            window.render_page(preserve_selection=True, keep_view_position=True)
+            if getattr(window, "view_mode", "single") == "continuous":
+                window.annotation_controller.refresh_continuous_page_after_geometry_edit(model.page_index, model.xref)
+            else:
+                window.render_page(preserve_selection=True, keep_view_position=True)
             window.show_error(f"{status} failed", exc)
 
     def go_to_anchor_reference_by_name(self, reference: str) -> None:

@@ -117,6 +117,12 @@ def create_actions(window) -> None:
     window.zoom_in_action = QAction("Zoom +", window)
     window.zoom_in_action.triggered.connect(window.zoom_in)
 
+    window.continuous_view_action = QAction("Continuous", window)
+    window.continuous_view_action.setCheckable(True)
+    window.continuous_view_action.triggered.connect(
+        lambda checked=False: window.set_continuous_view_enabled(checked)
+    )
+
     window.text_mode_action = QAction("Text", window)
     window.text_mode_action.setCheckable(True)
     window.text_mode_action.setChecked(True)
@@ -209,6 +215,9 @@ def create_actions(window) -> None:
     window.debug_current_page_state_action = QAction("Debug Current Page State", window)
     window.debug_current_page_state_action.triggered.connect(window.debug_current_page_state)
 
+    window.audit_continuous_view_state_action = QAction("Audit Continuous View State", window)
+    window.audit_continuous_view_state_action.triggered.connect(window.audit_continuous_view_state)
+
     window.debug_selected_annotation_pdf_object_action = QAction("Debug Selected Annotation PDF Object", window)
     window.debug_selected_annotation_pdf_object_action.triggered.connect(window.debug_selected_annotation_pdf_object)
 
@@ -234,6 +243,9 @@ def create_menus(window) -> None:
     edit_menu.addAction(window.edit_annotation_action)
     edit_menu.addAction(window.delete_annotation_action)
 
+    view_menu = window.menuBar().addMenu("View")
+    view_menu.addAction(window.continuous_view_action)
+
     tools_menu = window.menuBar().addMenu("Tools")
     tools_menu.addAction(window.show_navigation_action)
     tools_menu.addSeparator()
@@ -252,6 +264,7 @@ def create_menus(window) -> None:
     tools_menu.addAction(window.search_annotations_action)
     tools_menu.addSeparator()
     tools_menu.addAction(window.debug_current_page_state_action)
+    tools_menu.addAction(window.audit_continuous_view_state_action)
     tools_menu.addAction(window.debug_selected_annotation_pdf_object_action)
     tools_menu.addAction(window.debug_log_action)
 
@@ -275,6 +288,7 @@ def create_toolbar(window) -> None:
 
     toolbar.addAction(window.zoom_out_action)
     toolbar.addAction(window.zoom_in_action)
+    toolbar.addAction(window.continuous_view_action)
 
     toolbar.addSeparator()
 
@@ -295,6 +309,7 @@ def create_toolbar(window) -> None:
 def update_actions(window) -> None:
     has_doc = window.doc is not None
     is_reindexing = window.reindex_thread is not None
+    is_continuous = getattr(window, "view_mode", "single") == "continuous"
     for action in (
         window.close_action,
         window.save_action,
@@ -304,6 +319,7 @@ def update_actions(window) -> None:
         window.next_action,
         window.zoom_out_action,
         window.zoom_in_action,
+        window.continuous_view_action,
         window.text_mode_action,
         window.add_typewriter_action,
         window.add_rectangle_action,
@@ -316,6 +332,7 @@ def update_actions(window) -> None:
         window.qpdf_check_current_pdf_action,
         window.qpdf_rewrite_current_pdf_action,
         window.debug_current_page_state_action,
+        window.audit_continuous_view_state_action,
         window.reindex_current_pdf_action,
     ):
         action.setEnabled(has_doc)
@@ -330,7 +347,17 @@ def update_actions(window) -> None:
     window.search_annotations_action.setEnabled(not is_reindexing)
     window.view_back_action.setEnabled(window.view_history_controller.can_go_back() and not is_reindexing)
     window.view_forward_action.setEnabled(window.view_history_controller.can_go_forward() and not is_reindexing)
+    for shortcut in getattr(window, "shortcut_objects", []):
+        shortcut.setEnabled(has_doc)
+    if hasattr(window, "quick_highlight_color_buttons"):
+        for button, _color in window.quick_highlight_color_buttons:
+            button.setEnabled(has_doc)
+    if hasattr(window, "quick_highlight_opacity_spin"):
+        window.quick_highlight_opacity_spin.setEnabled(has_doc)
+    if getattr(window, "batch_freetext_widget", None) is not None:
+        window.batch_freetext_widget.set_read_only(is_continuous)
 
+    window.continuous_view_action.setChecked(is_continuous)
     if not has_doc or window.doc is None:
         window.close_action.setEnabled(False)
         window.delete_annotation_action.setEnabled(False)

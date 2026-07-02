@@ -156,6 +156,10 @@ def open_settings(window) -> None:
     popup_freetext_checkbox.setChecked(window.use_popup_freetext_input)
     normal_layout.addWidget(popup_freetext_checkbox)
 
+    graphics_freetext_editor_checkbox = QCheckBox("Use graphics inline FreeText editor")
+    graphics_freetext_editor_checkbox.setChecked(window.use_graphics_freetext_editor)
+    normal_layout.addWidget(graphics_freetext_editor_checkbox)
+
     extract_highlight_text_checkbox = QCheckBox("Extract highlighted page text when reindexing")
     extract_highlight_text_checkbox.setChecked(window.extract_highlight_text_on_reindex)
     normal_layout.addWidget(extract_highlight_text_checkbox)
@@ -198,18 +202,24 @@ def open_settings(window) -> None:
 
     shortcuts_page = QWidget(dialog)
     shortcuts_layout = QVBoxLayout(shortcuts_page)
-    shortcuts_form = QFormLayout()
+    shortcuts_columns_layout = QHBoxLayout()
+    shortcuts_forms = (QFormLayout(), QFormLayout())
+    shortcuts_columns_layout.addLayout(shortcuts_forms[0])
+    shortcuts_columns_layout.addLayout(shortcuts_forms[1])
     shortcut_edits: dict[str, ShortcutEditor] = {}
     selected_shortcut_key: dict[str, str | None] = {"key": None}
     current_shortcuts = merged_shortcuts(getattr(window, "shortcuts", {}))
-    for key in DEFAULT_SHORTCUTS:
+    shortcut_keys = list(DEFAULT_SHORTCUTS)
+    split_index = (len(shortcut_keys) + 1) // 2
+    for index, key in enumerate(shortcut_keys):
         edit = ShortcutEditor(key)
         edit.set_shortcut_text(current_shortcuts.get(key, ""))
         edit.setToolTip(f"Default: {DEFAULT_SHORTCUTS[key]}")
         edit.focused.connect(lambda shortcut_key, selected=selected_shortcut_key: selected.__setitem__("key", shortcut_key))
         shortcut_edits[key] = edit
-        shortcuts_form.addRow(SHORTCUT_LABELS.get(key, key), edit)
-    shortcuts_layout.addLayout(shortcuts_form)
+        form = shortcuts_forms[0] if index < split_index else shortcuts_forms[1]
+        form.addRow(SHORTCUT_LABELS.get(key, key), edit)
+    shortcuts_layout.addLayout(shortcuts_columns_layout)
     reset_layout = QHBoxLayout()
     reset_layout.addStretch(1)
     reset_selected_button = QPushButton("Reset Selected")
@@ -285,6 +295,7 @@ def open_settings(window) -> None:
 
         window.set_foxit_freetext(foxit_checkbox.isChecked())
         window.use_popup_freetext_input = popup_freetext_checkbox.isChecked()
+        window.use_graphics_freetext_editor = graphics_freetext_editor_checkbox.isChecked()
         window.extract_highlight_text_on_reindex = extract_highlight_text_checkbox.isChecked()
         window.quick_audit_detailed = quick_audit_detailed_checkbox.isChecked()
         window.save_incremental_safety_default = save_incremental_safety_default_checkbox.isChecked()
