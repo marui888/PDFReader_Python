@@ -1,4 +1,5 @@
 from collections.abc import Callable
+import json
 from pathlib import Path
 import time
 
@@ -14,10 +15,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QFileDialog,
+    QMessageBox,
     QMenu,
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
+    QSizePolicy,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -45,14 +48,30 @@ class AnnotationSearchWidget(QWidget):
         self.current_page_index = 0
         self.indexed_files: list[tuple[str, str]] = []
         self.selected_document_paths: set[str] = set()
-        self.include_mode = "all"
-        self.include_text = ""
-        self.exclude_text = ""
         self.search_rule_dir = Path.cwd() / "search_rules"
         self.recent_search_rule_files: list[str] = []
         self.recent_search_rules_changed: Callable[[list[str]], None] | None = None
-        self.search_input = QLineEdit()
-        self.search_input.setPlaceholderText("Search annotation text")
+        self.include_mode_combo = QComboBox()
+        self.include_mode_combo.addItem("AND", "all")
+        self.include_mode_combo.addItem("OR", "any")
+        self.include_inputs = [QLineEdit() for _index in range(4)]
+        for index, input_box in enumerate(self.include_inputs, start=1):
+            input_box.setPlaceholderText(f"term{index}")
+        self.include_whole_word_checks = [QCheckBox("W") for _index in range(4)]
+        for checkbox in self.include_whole_word_checks:
+            checkbox.setToolTip("whole word")
+            checkbox.setFixedWidth(34)
+        self.include_regex_checks = [QCheckBox("R") for _index in range(4)]
+        for checkbox in self.include_regex_checks:
+            checkbox.setToolTip("regex")
+            checkbox.setFixedWidth(34)
+        self.exclude_mode_combo = QComboBox()
+        self.exclude_mode_combo.addItem("AND", "all")
+        self.exclude_mode_combo.addItem("OR", "any")
+        self.exclude_mode_combo.setCurrentIndex(1)
+        self.exclude_inputs = [QLineEdit() for _index in range(2)]
+        for index, input_box in enumerate(self.exclude_inputs, start=1):
+            input_box.setPlaceholderText(f"term{index}")
         self.type_combo = QComboBox()
         self.type_combo.addItem("All types", None)
         self.type_combo.addItem("FreeText", "freetext")
@@ -61,6 +80,17 @@ class AnnotationSearchWidget(QWidget):
         self.type_combo.addItem("Arrow", "arrow")
         self.type_combo.addItem("Unsupported", "unsupported")
         self.file_filter_button = QPushButton("All files")
+        self.clear_include_button = QPushButton("Clear")
+        self.clear_exclude_button = QPushButton("Clear")
+        self.save_query_button = QPushButton("Save")
+        self.load_query_button = QPushButton("Load")
+        for button in (
+            self.clear_include_button,
+            self.clear_exclude_button,
+            self.save_query_button,
+            self.load_query_button,
+        ):
+            button.setFixedWidth(46)
         self.advanced_button = QPushButton("Advanced...")
         self.search_button = QPushButton("Search")
         self.maximize_button = QPushButton("Maximize")
@@ -71,18 +101,67 @@ class AnnotationSearchWidget(QWidget):
         self.status_label = QLabel("No PDF open.")
         self.status_label.setWordWrap(True)
 
-        controls = QHBoxLayout()
-        controls.addWidget(self.search_input, 1)
-        controls.addWidget(self.type_combo)
-        controls.addWidget(self.file_filter_button)
-        controls.addWidget(self.advanced_button)
-        controls.addWidget(self.search_button)
-        controls.addWidget(self.maximize_button)
+        controls = QVBoxLayout()
+        include_header = QHBoxLayout()
+        include_header.addWidget(QLabel("Including:"))
+        include_header.addWidget(QLabel("Mode:"))
+        include_header.addWidget(self.include_mode_combo)
+        include_header.addWidget(self.clear_include_button)
+        include_header.addWidget(self.save_query_button)
+        include_header.addWidget(self.load_query_button)
+        include_header.addStretch(1)
+        include_row_1 = QHBoxLayout()
+        include_row_1.addWidget(self.include_inputs[0], 1)
+        include_row_1.addWidget(self.include_whole_word_checks[0])
+        include_row_1.addWidget(self.include_regex_checks[0])
+        include_row_1.addWidget(self.include_inputs[1], 1)
+        include_row_1.addWidget(self.include_whole_word_checks[1])
+        include_row_1.addWidget(self.include_regex_checks[1])
+        include_row_2 = QHBoxLayout()
+        include_row_2.addWidget(self.include_inputs[2], 1)
+        include_row_2.addWidget(self.include_whole_word_checks[2])
+        include_row_2.addWidget(self.include_regex_checks[2])
+        include_row_2.addWidget(self.include_inputs[3], 1)
+        include_row_2.addWidget(self.include_whole_word_checks[3])
+        include_row_2.addWidget(self.include_regex_checks[3])
+
+        exclude_header = QHBoxLayout()
+        exclude_header.addWidget(QLabel("Excluding:"))
+        exclude_header.addWidget(QLabel("Mode:"))
+        exclude_header.addWidget(self.exclude_mode_combo)
+        exclude_header.addWidget(self.clear_exclude_button)
+        exclude_header.addStretch(1)
+        exclude_row = QHBoxLayout()
+        exclude_row.addWidget(self.exclude_inputs[0], 1)
+        exclude_row.addWidget(self.exclude_inputs[1], 1)
+
+        type_row = QHBoxLayout()
+        type_row.addWidget(QLabel("Type"))
+        type_row.addWidget(self.type_combo, 1)
+        files_row = QHBoxLayout()
+        files_row.addWidget(QLabel("Files"))
+        files_row.addWidget(self.file_filter_button, 1)
+        button_row = QHBoxLayout()
+        button_row.addWidget(self.search_button)
+        button_row.addWidget(self.advanced_button)
+        button_row.addWidget(self.maximize_button)
+        button_row.addStretch(1)
+
+        controls.addLayout(include_header)
+        controls.addLayout(include_row_1)
+        controls.addLayout(include_row_2)
+        controls.addLayout(exclude_header)
+        controls.addLayout(exclude_row)
+        controls.addLayout(type_row)
+        controls.addLayout(files_row)
+        controls.addLayout(button_row)
+        controls.addStretch(1)
 
         page_controls = QHBoxLayout()
         page_controls.addWidget(self.prev_button)
         page_controls.addWidget(self.next_button)
         page_controls.addWidget(self.page_label, 1)
+        page_controls.setContentsMargins(0, 0, 0, 0)
 
         self.table = QTableWidget(0, 5)
         self.table.setHorizontalHeaderLabels(("File", "Page", "Type", "xref", "Text"))
@@ -94,20 +173,47 @@ class AnnotationSearchWidget(QWidget):
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
+        self.table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
 
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.status_label)
-        layout.addLayout(controls)
-        layout.addLayout(page_controls)
-        layout.addWidget(self.table)
+        results_layout = QVBoxLayout()
+        results_layout.setSpacing(4)
+        results_layout.addWidget(self.table, 1)
+        results_layout.addLayout(page_controls, 0)
+
+        query_panel = QWidget(self)
+        query_layout = QVBoxLayout(query_panel)
+        query_layout.setContentsMargins(0, 0, 0, 0)
+        query_layout.addWidget(self.status_label)
+        query_layout.addLayout(controls)
+        query_panel.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
+        query_scroll = QScrollArea(self)
+        query_scroll.setWidgetResizable(True)
+        query_scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        query_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        query_scroll.setWidget(query_panel)
+        query_scroll.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(6)
+        layout.addLayout(results_layout, 3)
+        layout.addWidget(query_scroll, 1)
 
         self.search_button.clicked.connect(self.emit_search_requested)
+        self.save_query_button.clicked.connect(self.save_query_to_file)
+        self.load_query_button.clicked.connect(self.load_query_from_file)
+        self.clear_include_button.clicked.connect(self.clear_include_terms)
+        self.clear_exclude_button.clicked.connect(self.clear_exclude_terms)
         self.file_filter_button.clicked.connect(self.show_file_filter_dialog)
         self.advanced_button.clicked.connect(self.show_advanced_search_dialog)
         self.maximize_button.clicked.connect(self.maximize_requested.emit)
         self.prev_button.clicked.connect(self.show_previous_page)
         self.next_button.clicked.connect(self.show_next_page)
-        self.search_input.returnPressed.connect(self.emit_search_requested)
+        for input_box in self.include_inputs + self.exclude_inputs:
+            input_box.returnPressed.connect(self.emit_search_requested)
+        for index, checkbox in enumerate(self.include_regex_checks):
+            checkbox.toggled.connect(lambda checked, item_index=index: self.on_include_regex_toggled(item_index, checked))
         self.table.itemDoubleClicked.connect(lambda _item: self.emit_result_activated())
         self.update_page_controls()
 
@@ -127,11 +233,61 @@ class AnnotationSearchWidget(QWidget):
 
     def current_search_query(self) -> AnnotationSearchQuery:
         return build_search_query(
-            keyword=self.search_input.text(),
-            include_mode=self.include_mode,
-            include_text=self.include_text,
-            exclude_text=self.exclude_text,
+            keyword="",
+            include_mode=self.current_include_mode(),
+            include_text=self.current_include_text(),
+            include_whole_words=self.current_include_whole_words(),
+            include_regexes=self.current_include_regexes(),
+            exclude_text=self.current_exclude_text(),
+            exclude_mode=self.current_exclude_mode(),
         )
+
+    def current_include_mode(self) -> str:
+        return self.include_mode_combo.currentData()
+
+    def current_exclude_mode(self) -> str:
+        return self.exclude_mode_combo.currentData()
+
+    def current_include_text(self) -> str:
+        return "\n".join(input_box.text().strip() for input_box in self.include_inputs if input_box.text().strip())
+
+    def current_include_whole_words(self) -> list[bool]:
+        values: list[bool] = []
+        for input_box, checkbox, regex_checkbox in zip(
+            self.include_inputs,
+            self.include_whole_word_checks,
+            self.include_regex_checks,
+        ):
+            if input_box.text().strip():
+                values.append(checkbox.isChecked() and not regex_checkbox.isChecked())
+        return values
+
+    def current_include_regexes(self) -> list[bool]:
+        values: list[bool] = []
+        for input_box, checkbox in zip(self.include_inputs, self.include_regex_checks):
+            if input_box.text().strip():
+                values.append(checkbox.isChecked())
+        return values
+
+    def current_exclude_text(self) -> str:
+        return "\n".join(input_box.text().strip() for input_box in self.exclude_inputs if input_box.text().strip())
+
+    def set_term_inputs(self, inputs: list[QLineEdit], text: str) -> None:
+        terms = [term.strip() for term in text.replace("\r", "\n").replace(",", "\n").replace(";", "\n").splitlines() if term.strip()]
+        for index, input_box in enumerate(inputs):
+            input_box.setText(terms[index] if index < len(terms) else "")
+
+    def clear_include_terms(self) -> None:
+        for input_box in self.include_inputs:
+            input_box.clear()
+        for checkbox in self.include_whole_word_checks:
+            checkbox.setChecked(False)
+        for checkbox in self.include_regex_checks:
+            checkbox.setChecked(False)
+
+    def clear_exclude_terms(self) -> None:
+        for input_box in self.exclude_inputs:
+            input_box.clear()
 
     def show_advanced_search_dialog(self) -> None:
         dialog = QDialog(self)
@@ -144,20 +300,20 @@ class AnnotationSearchWidget(QWidget):
         mode_combo = QComboBox()
         mode_combo.addItem("All terms", "all")
         mode_combo.addItem("Any term", "any")
-        mode_combo.setCurrentIndex(1 if self.include_mode == "any" else 0)
+        mode_combo.setCurrentIndex(1 if self.current_include_mode() == "any" else 0)
         mode_row.addWidget(mode_combo, 1)
         layout.addLayout(mode_row)
 
         include_edit = QPlainTextEdit()
         include_edit.setPlaceholderText("Terms to include. Separate with commas, semicolons, or new lines.")
-        include_edit.setPlainText(self.include_text)
+        include_edit.setPlainText(self.current_include_text())
         include_edit.setMinimumHeight(90)
         layout.addWidget(QLabel("Include"))
         layout.addWidget(include_edit)
 
         exclude_edit = QPlainTextEdit()
         exclude_edit.setPlaceholderText("Terms to exclude. Separate with commas, semicolons, or new lines.")
-        exclude_edit.setPlainText(self.exclude_text)
+        exclude_edit.setPlainText(self.current_exclude_text())
         exclude_edit.setMinimumHeight(70)
         layout.addWidget(QLabel("Exclude"))
         layout.addWidget(exclude_edit)
@@ -202,9 +358,13 @@ class AnnotationSearchWidget(QWidget):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
 
-        self.include_mode = mode_combo.currentData()
-        self.include_text = include_edit.toPlainText()
-        self.exclude_text = exclude_edit.toPlainText()
+        self.include_mode_combo.setCurrentIndex(1 if mode_combo.currentData() == "any" else 0)
+        self.set_term_inputs(self.include_inputs, include_edit.toPlainText())
+        for checkbox in self.include_whole_word_checks:
+            checkbox.setChecked(False)
+        for checkbox in self.include_regex_checks:
+            checkbox.setChecked(False)
+        self.set_term_inputs(self.exclude_inputs, exclude_edit.toPlainText())
         self.update_advanced_button()
 
     def save_advanced_search_rule(
@@ -230,6 +390,7 @@ class AnnotationSearchWidget(QWidget):
             mode_combo.currentData(),
             include_edit.toPlainText(),
             exclude_edit.toPlainText(),
+            "any",
             path.stem,
         )
         self.add_recent_search_rule_file(path)
@@ -291,6 +452,82 @@ class AnnotationSearchWidget(QWidget):
         include_edit.setPlainText(rule["include_text"])
         exclude_edit.setPlainText(rule["exclude_text"])
         self.add_recent_search_rule_file(path)
+
+    def query_state(self) -> dict:
+        return {
+            "include_mode": self.current_include_mode(),
+            "include_terms": [input_box.text() for input_box in self.include_inputs],
+            "include_whole_words": [checkbox.isChecked() for checkbox in self.include_whole_word_checks],
+            "include_regexes": [checkbox.isChecked() for checkbox in self.include_regex_checks],
+            "exclude_mode": self.current_exclude_mode(),
+            "exclude_terms": [input_box.text() for input_box in self.exclude_inputs],
+            "type": self.type_combo.currentData(),
+            "selected_document_paths": sorted(self.selected_document_paths),
+        }
+
+    def apply_query_state(self, state: dict) -> None:
+        self.include_mode_combo.setCurrentIndex(max(0, self.include_mode_combo.findData(state.get("include_mode", "all"))))
+        self.exclude_mode_combo.setCurrentIndex(max(0, self.exclude_mode_combo.findData(state.get("exclude_mode", "any"))))
+        include_terms = list(state.get("include_terms", []))
+        include_whole_words = list(state.get("include_whole_words", []))
+        include_regexes = list(state.get("include_regexes", []))
+        exclude_terms = list(state.get("exclude_terms", []))
+        for index, input_box in enumerate(self.include_inputs):
+            input_box.setText(str(include_terms[index]) if index < len(include_terms) else "")
+        for index, checkbox in enumerate(self.include_whole_word_checks):
+            checkbox.setChecked(bool(include_whole_words[index]) if index < len(include_whole_words) else False)
+        for index, checkbox in enumerate(self.include_regex_checks):
+            checkbox.setChecked(bool(include_regexes[index]) if index < len(include_regexes) else False)
+        for index, input_box in enumerate(self.exclude_inputs):
+            input_box.setText(str(exclude_terms[index]) if index < len(exclude_terms) else "")
+        self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(state.get("type"))))
+        selected_paths = state.get("selected_document_paths", [])
+        if isinstance(selected_paths, list):
+            available_paths = {path for path, _file_name in self.indexed_files}
+            self.selected_document_paths = {str(path) for path in selected_paths if str(path) in available_paths}
+            self.update_file_filter_button()
+        self.update_advanced_button()
+
+    def save_query_to_file(self) -> None:
+        self.search_rule_dir.mkdir(parents=True, exist_ok=True)
+        file_name, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Search Annotations Query",
+            str(self.search_rule_dir / "SearchAnnotations.SearchAnnotations.json"),
+            "Search Annotations Query (*.SearchAnnotations.json);;JSON Files (*.json)",
+        )
+        if not file_name:
+            return
+        path = Path(file_name)
+        if path.suffix.lower() != ".json" or not path.name.endswith(".SearchAnnotations.json"):
+            path = path.with_name(path.stem + ".SearchAnnotations.json")
+        try:
+            path.write_text(json.dumps(self.query_state(), ensure_ascii=False, indent=2), encoding="utf-8")
+            self.add_recent_search_rule_file(path)
+            self.status_label.setText(f"Saved query: {path.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Save Search Annotations Query failed", str(exc))
+
+    def load_query_from_file(self) -> None:
+        self.search_rule_dir.mkdir(parents=True, exist_ok=True)
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load Search Annotations Query",
+            str(self.search_rule_dir),
+            "Search Annotations Query (*.SearchAnnotations.json);;JSON Files (*.json)",
+        )
+        if not file_name:
+            return
+        try:
+            path = Path(file_name)
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise ValueError("Query file must contain a JSON object.")
+            self.apply_query_state(data)
+            self.add_recent_search_rule_file(path)
+            self.status_label.setText(f"Loaded query: {path.name}")
+        except Exception as exc:
+            QMessageBox.critical(self, "Load Search Annotations Query failed", str(exc))
 
     def add_recent_search_rule_file(self, path: Path) -> None:
         path_text = str(path)
@@ -514,10 +751,10 @@ class AnnotationSearchWidget(QWidget):
         self.update_page_controls()
 
     def reset_search_state(self) -> None:
-        self.search_input.clear()
-        self.include_mode = "all"
-        self.include_text = ""
-        self.exclude_text = ""
+        self.include_mode_combo.setCurrentIndex(0)
+        self.exclude_mode_combo.setCurrentIndex(1)
+        self.clear_include_terms()
+        self.clear_exclude_terms()
         self.update_advanced_button()
         self.type_combo.setCurrentIndex(0)
         self.clear_results()
@@ -533,7 +770,18 @@ class AnnotationSearchWidget(QWidget):
 
     def set_indexing_busy(self, busy: bool) -> None:
         self.search_button.setEnabled(not busy)
-        self.search_input.setEnabled(not busy)
+        for input_box in self.include_inputs + self.exclude_inputs:
+            input_box.setEnabled(not busy)
+        for checkbox in self.include_whole_word_checks:
+            checkbox.setEnabled(not busy)
+        for checkbox in self.include_regex_checks:
+            checkbox.setEnabled(not busy)
+        self.include_mode_combo.setEnabled(not busy)
+        self.exclude_mode_combo.setEnabled(not busy)
+        self.clear_include_button.setEnabled(not busy)
+        self.clear_exclude_button.setEnabled(not busy)
+        self.save_query_button.setEnabled(not busy)
+        self.load_query_button.setEnabled(not busy)
         self.type_combo.setEnabled(not busy)
         self.file_filter_button.setEnabled(not busy)
         self.advanced_button.setEnabled(not busy)
@@ -549,6 +797,14 @@ class AnnotationSearchWidget(QWidget):
         if len(compact) > 220:
             return compact[:220] + "..."
         return compact
+
+    def on_include_regex_toggled(self, index: int, checked: bool) -> None:
+        if index < 0 or index >= len(self.include_whole_word_checks):
+            return
+        whole_word_checkbox = self.include_whole_word_checks[index]
+        if checked:
+            whole_word_checkbox.setChecked(False)
+        whole_word_checkbox.setEnabled(not checked)
 
     def tooltip_text(self, result: AnnotationSearchResult, column: int) -> str:
         if column != 4:

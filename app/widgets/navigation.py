@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -19,6 +20,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.anchors import AnchorModel, AnchorReferenceModel
+from app.services.icons import dirty_dot_icon
 
 
 class BookmarksWidget(QWidget):
@@ -88,6 +90,7 @@ class AnchorsWidget(QWidget):
     anchor_activated = Signal(int, int)
     anchor_insert_requested = Signal(str)
     reference_source_activated = Signal(int, int)
+    refresh_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -95,11 +98,25 @@ class AnchorsWidget(QWidget):
         self.copy_button = QPushButton("Copy Ref")
         self.insert_button = QPushButton("Insert Ref")
         self.references_button = QPushButton("Show Refs")
+        self.refresh_button = QPushButton("Refresh")
+        self.page_basis_title_label = QLabel("Index:")
+        self.page_basis_label = QLabel("Physical")
+        self.page_basis_label.setStyleSheet(
+            """
+            QLabel {
+                background: #1d4ed8;
+                color: white;
+                font-weight: 700;
+                padding: 2px 6px;
+            }
+            """
+        )
+        self.anchor_count_label = QLabel("Anchors: 0")
         self.empty_label = QLabel("No anchors")
         self.empty_label.setVisible(False)
         self.references_by_anchor: dict[str, list[AnchorReferenceModel]] = {}
         self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(("Ref", "Page", "xref", "Refs", "Text"))
+        self.table.setHorizontalHeaderLabels(("Ref", "Text", "Refs", "Page", "xref"))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -108,16 +125,39 @@ class AnchorsWidget(QWidget):
         buttons.addWidget(self.copy_button)
         buttons.addWidget(self.insert_button)
         buttons.addWidget(self.references_button)
+        buttons.addWidget(self.refresh_button)
+        buttons.addStretch(1)
+
+        summary = QHBoxLayout()
+        summary.addWidget(self.page_basis_title_label)
+        summary.addWidget(self.page_basis_label)
+        summary.addWidget(self.anchor_count_label)
+        summary.addStretch(1)
+
+        top_panel = QWidget()
+        top_layout = QVBoxLayout(top_panel)
+        top_layout.setContentsMargins(0, 0, 0, 0)
+        top_layout.setSpacing(4)
+        top_layout.addLayout(summary)
+        top_layout.addLayout(buttons)
+
+        list_panel = QWidget()
+        list_layout = QVBoxLayout(list_panel)
+        list_layout.setContentsMargins(0, 0, 0, 0)
+        list_layout.setSpacing(4)
+        list_layout.addWidget(self.empty_label)
+        list_layout.addWidget(self.table)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.addLayout(buttons)
-        layout.addWidget(self.empty_label)
-        layout.addWidget(self.table)
+        layout.setSpacing(4)
+        layout.addWidget(top_panel)
+        layout.addWidget(list_panel, 1)
 
         self.copy_button.clicked.connect(self.copy_selected_reference)
         self.insert_button.clicked.connect(self.insert_selected_reference)
         self.references_button.clicked.connect(self.show_selected_references)
+        self.refresh_button.clicked.connect(self.refresh_requested.emit)
         self.table.itemDoubleClicked.connect(lambda _item: self.activate_selected_anchor())
         self.table.itemSelectionChanged.connect(self.update_buttons)
         self.set_insert_enabled(False)
@@ -134,10 +174,10 @@ class AnchorsWidget(QWidget):
         for row, anchor in enumerate(anchors):
             values = (
                 anchor.reference,
+                self.compact_text(anchor.text),
+                str(len(self.references_by_anchor.get(anchor.reference, []))),
                 str(anchor.page_number),
                 str(anchor.xref),
-                str(len(self.references_by_anchor.get(anchor.reference, []))),
-                self.compact_text(anchor.text),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
@@ -145,10 +185,15 @@ class AnchorsWidget(QWidget):
                 self.table.setItem(row, column, item)
         self.empty_label.setVisible(not anchors)
         self.table.setVisible(bool(anchors))
+        self.anchor_count_label.setText(f"Anchors: {len(anchors)}")
         self.update_buttons()
 
     def clear(self) -> None:
         self.set_anchors([])
+
+    def set_page_basis(self, page_basis: str) -> None:
+        label = "Book" if page_basis == "book" else "Physical"
+        self.page_basis_label.setText(label)
 
     def selected_anchor(self) -> AnchorModel | None:
         row = self.table.currentRow()
@@ -205,6 +250,7 @@ class NavigationWidget(QTabWidget):
     anchor_activated = Signal(int, int)
     anchor_insert_requested = Signal(str)
     reference_source_activated = Signal(int, int)
+    anchors_refresh_requested = Signal()
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
@@ -212,10 +258,13 @@ class NavigationWidget(QTabWidget):
         self.anchors_widget = AnchorsWidget()
         self.addTab(self.bookmarks_widget, "目录")
         self.addTab(self.anchors_widget, "锚点")
+        self.anchor_tab_base_text = self.tabText(1)
+        self.anchor_tab_dirty = False
         self.bookmarks_widget.bookmark_activated.connect(self.bookmark_activated.emit)
         self.anchors_widget.anchor_activated.connect(self.anchor_activated.emit)
         self.anchors_widget.anchor_insert_requested.connect(self.anchor_insert_requested.emit)
         self.anchors_widget.reference_source_activated.connect(self.reference_source_activated.emit)
+        self.anchors_widget.refresh_requested.connect(self.anchors_refresh_requested.emit)
 
     def set_bookmarks(self, toc: list[list]) -> None:
         self.bookmarks_widget.set_toc(toc)
@@ -232,9 +281,19 @@ class NavigationWidget(QTabWidget):
 
     def clear_anchors(self) -> None:
         self.anchors_widget.clear()
+        self.set_anchor_dirty(False)
+
+    def set_anchor_dirty(self, dirty: bool) -> None:
+        self.anchor_tab_dirty = bool(dirty)
+        self.setTabText(1, self.anchor_tab_base_text)
+        self.setTabIcon(1, dirty_dot_icon() if self.anchor_tab_dirty else QIcon())
+        self.setTabToolTip(1, "Anchor data needs refresh." if self.anchor_tab_dirty else "")
 
     def set_anchor_insert_enabled(self, enabled: bool) -> None:
         self.anchors_widget.set_insert_enabled(enabled)
+
+    def set_anchor_page_basis(self, page_basis: str) -> None:
+        self.anchors_widget.set_page_basis(page_basis)
 
 
 class ReferencesDialog(QDialog):

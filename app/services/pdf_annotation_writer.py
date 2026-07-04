@@ -198,29 +198,50 @@ class PdfAnnotationWriter:
             rect.width,
         )
         adjusted = fitz.Rect(rect)
-        if corner in {"left", "right", "top-left", "top-right", "bottom-left", "bottom-right"}:
+        if corner in {"top", "top-left", "top-right"}:
+            adjusted.y0 = adjusted.y1 - required_height
+        else:
             adjusted.y1 = adjusted.y0 + required_height
-            return adjusted
-        if adjusted.height >= required_height:
-            return rect
-        adjusted.y1 = adjusted.y0 + required_height
         return adjusted
 
     def estimated_freetext_height_for_width(self, text: str, font_size: float, width: float) -> float:
-        usable_width = max(1.0, width - 2.0)
+        usable_width = max(1.0, width)
         line_count = 0
         for paragraph in text.split("\n"):
             line_count += max(1, self.estimated_wrapped_freetext_line_count(paragraph, usable_width, font_size))
         return max(12.0, ceil(line_count * (font_size * 1.15 + 2.0)))
+
+    def estimated_freetext_width(self, text: str, font_size: float) -> float:
+        longest_line = max(text.splitlines() or [text], key=len)
+        width = 0.0
+        for character in longest_line:
+            width += self.estimated_freetext_character_width(character, font_size)
+        return max(20.0, ceil(width + 4.0))
+
+    def auto_fit_freetext_annotation(
+        self,
+        page: fitz.Page,
+        model: AnnotationModel,
+        default_freetext_font_size: int,
+    ) -> None:
+        annot = self.find_page_annotation_by_xref(page, model.xref)
+        if annot is None:
+            raise RuntimeError("The selected annotation was not found on this page.")
+        font_size = model.font_size or default_freetext_font_size
+        width = min(max(20.0, model.rect.width), self.estimated_freetext_width(model.text or "", font_size))
+        height = self.estimated_freetext_height_for_width(model.text or "", font_size, width)
+        rect = fitz.Rect(model.rect.x0, model.rect.y0, model.rect.x0 + width, model.rect.y0 + height)
+        self.set_freetext_rect(annot, model, rect, default_freetext_font_size)
 
     def estimated_wrapped_freetext_line_count(self, text: str, usable_width: float, font_size: float) -> int:
         if not text:
             return 1
         line_count = 1
         current_width = 0.0
+        wrap_tolerance = font_size * 0.25
         for character in text:
             char_width = self.estimated_freetext_character_width(character, font_size)
-            if current_width > 0 and current_width + char_width > usable_width:
+            if current_width > 0 and current_width + char_width > usable_width + wrap_tolerance:
                 line_count += 1
                 current_width = char_width
             else:
@@ -250,12 +271,11 @@ class PdfAnnotationWriter:
         default_freetext_font_size: int,
     ) -> None:
         annot.set_rect(rect)
-        annot.update(
-            fontsize=model.font_size or default_freetext_font_size,
-            fontname="helv",
-            text_color=model.color or (1, 0, 0),
-            fill_color=None,
-            border_color=None,
+        annot.set_border(width=0)
+        self.normalize_freetext_annotation_clean_appearance(
+            annot,
+            int(model.font_size or default_freetext_font_size),
+            model.color or (1, 0, 0),
         )
 
     def set_line_annotation_points(

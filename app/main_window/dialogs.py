@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QFormLayout,
     QHBoxLayout,
@@ -193,6 +194,12 @@ def open_settings(window) -> None:
     search_page_size_spin.setValue(window.search_page_size)
     form.addRow("Search page size", search_page_size_spin)
 
+    anchor_page_basis_combo = QComboBox()
+    anchor_page_basis_combo.addItem("Physical page", "physical")
+    anchor_page_basis_combo.addItem("Book page", "book")
+    anchor_page_basis_combo.setCurrentIndex(1 if window.anchor_page_basis == "book" else 0)
+    form.addRow("Anchor page basis", anchor_page_basis_combo)
+
     qpdf_bin_dir_edit = QLineEdit()
     qpdf_bin_dir_edit.setText(window.qpdf_bin_dir)
     form.addRow("QPDF bin directory", qpdf_bin_dir_edit)
@@ -303,6 +310,10 @@ def open_settings(window) -> None:
         window.freetext_font_size_max = max(window.freetext_font_size_min, font_max_spin.value())
         window.default_freetext_font_size = window.clamp_freetext_font_size(font_size_spin.value())
         window.search_page_size = max(1, search_page_size_spin.value())
+        old_anchor_page_basis = window.anchor_page_basis
+        window.anchor_page_basis = anchor_page_basis_combo.currentData()
+        if window.anchor_page_basis != old_anchor_page_basis:
+            window.mark_navigation_anchors_dirty()
         window.qpdf_bin_dir = qpdf_bin_dir_edit.text().strip()
         window.shortcuts = shortcuts
         window.apply_shortcuts()

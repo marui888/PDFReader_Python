@@ -11,6 +11,6 @@ import qtawesome as qta
 def dirty_dot_icon() -> QIcon:
     return qta.icon(
         "fa5s.circle",
-        color="#e00000",
-        scale_factor=0.72,
+        color="#be5000",
+        scale_factor=0.66,
     )

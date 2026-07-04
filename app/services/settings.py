@@ -19,6 +19,7 @@ class AppSettings:
     quick_audit_detailed: bool = False
     qpdf_bin_dir: str = r"D:\tools\qpdf-12.3.2-msvc64\bin"
     save_incremental_safety_default: bool = True
+    anchor_page_basis: str = "physical"
     search_page_size: int = 500
     recent_files: list[dict] = field(default_factory=list)
     recent_search_rule_files: list[str] = field(default_factory=list)
@@ -54,6 +55,9 @@ def load_settings(path: Path, max_recent_files: int = 10) -> AppSettings:
     settings.save_incremental_safety_default = bool(
         data.get("save_incremental_safety_default", settings.save_incremental_safety_default)
     )
+    anchor_page_basis = str(data.get("anchor_page_basis", settings.anchor_page_basis))
+    if anchor_page_basis in {"physical", "book"}:
+        settings.anchor_page_basis = anchor_page_basis
     settings.recent_files = normalize_recent_files(data.get("recent_files", []), max_recent_files)
     settings.recent_search_rule_files = normalize_recent_paths(
         data.get("recent_search_rule_files", []),
@@ -102,6 +106,7 @@ def save_settings(path: Path, settings: AppSettings) -> None:
         "recent_files": settings.recent_files,
         "recent_search_rule_files": settings.recent_search_rule_files,
         "save_incremental_safety_default": settings.save_incremental_safety_default,
+        "anchor_page_basis": settings.anchor_page_basis,
         "search_page_size": settings.search_page_size,
         "shortcuts": dict(settings.shortcuts),
         "use_foxit_freetext": settings.use_foxit_freetext,

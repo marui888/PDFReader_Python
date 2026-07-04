@@ -12,4 +12,4 @@ class DocumentSession:
     zoom: float = 1.5
     is_dirty: bool = False
     selected_annotation_id: str | None = None
-
+    freetext_snapshot: object | None = None

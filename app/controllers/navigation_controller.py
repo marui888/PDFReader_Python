@@ -6,6 +6,7 @@ from app.anchors import (
     add_serial_prefix,
     is_anchor_text,
     remove_serial_prefix,
+    resolve_anchor_reference,
     scan_document_anchor_data,
     serial_number,
 )
@@ -27,31 +28,67 @@ class NavigationController:
         if window.doc is None:
             window.navigation_widget.clear_bookmarks()
             window.navigation_widget.clear_anchors()
+            window.navigation_widget.set_anchor_page_basis(window.anchor_page_basis)
             window.navigation_widget.set_anchor_insert_enabled(False)
             window.navigation_anchor_doc_id = None
             window.navigation_anchor_dirty = True
+            window.navigation_widget.set_anchor_dirty(False)
             return
         try:
             window.navigation_widget.set_bookmarks(window.doc.get_toc(simple=True))
+            window.navigation_widget.set_anchor_page_basis(window.anchor_page_basis)
             doc_id = id(window.doc)
             anchor_data = window.state.navigation.anchor_cache.get(doc_id)
-            if window.navigation_anchor_dirty or anchor_data is None:
-                anchor_data = scan_document_anchor_data(window.doc)
+            manual_refresh_required = (
+                bool(getattr(window, "navigation_anchor_manual_refresh_required", False))
+                and getattr(window, "navigation_anchor_manual_refresh_doc_id", None) == doc_id
+            )
+            if manual_refresh_required and anchor_data is None:
+                window.navigation_widget.clear_anchors()
+                window.navigation_widget.set_anchor_dirty(True)
+                window.navigation_widget.set_anchor_insert_enabled(self.can_insert_anchor_reference())
+                return
+            if anchor_data is None:
+                anchor_data = scan_document_anchor_data(window.doc, window.anchor_page_basis)
                 window.state.navigation.anchor_cache[doc_id] = anchor_data
                 window.log_debug(
                     f"Navigation anchors scanned: file={window.pdf_path} anchors={len(anchor_data.anchors)}"
                 )
-            if window.navigation_anchor_doc_id != doc_id or window.navigation_anchor_dirty:
+                window.navigation_anchor_dirty = False
+                window.navigation_anchor_manual_refresh_required = False
+                window.navigation_anchor_manual_refresh_doc_id = None
+            if window.navigation_anchor_doc_id != doc_id:
                 window.navigation_widget.set_anchors(anchor_data.anchors, anchor_data.references_by_anchor)
                 window.navigation_anchor_doc_id = doc_id
-                window.navigation_anchor_dirty = False
+            window.navigation_widget.set_anchor_dirty(window.navigation_anchor_dirty)
             window.navigation_widget.set_anchor_insert_enabled(self.can_insert_anchor_reference())
         except Exception as exc:
             window.navigation_widget.clear_bookmarks()
             window.navigation_widget.clear_anchors()
             window.navigation_anchor_doc_id = None
             window.navigation_anchor_dirty = True
+            window.navigation_widget.set_anchor_dirty(False)
             window.log_debug(f"Refresh navigation failed: {exc}")
+
+    def refresh_navigation_anchors(self) -> None:
+        window = self.window
+        if window.doc is None:
+            return
+        doc_id = id(window.doc)
+        window.state.navigation.anchor_cache.pop(doc_id, None)
+        window.navigation_anchor_doc_id = None
+        anchor_data = scan_document_anchor_data(window.doc, window.anchor_page_basis)
+        window.state.navigation.anchor_cache[doc_id] = anchor_data
+        window.navigation_widget.set_anchors(anchor_data.anchors, anchor_data.references_by_anchor)
+        window.navigation_anchor_doc_id = doc_id
+        window.navigation_anchor_dirty = False
+        window.navigation_anchor_manual_refresh_required = False
+        window.navigation_anchor_manual_refresh_doc_id = None
+        window.navigation_widget.set_anchor_dirty(False)
+        window.navigation_widget.set_anchor_insert_enabled(self.can_insert_anchor_reference())
+        window.log_debug(f"Navigation anchors refreshed: file={window.pdf_path} anchors={len(anchor_data.anchors)}")
+        label = "Book page" if window.anchor_page_basis == "book" else "Physical page"
+        window.statusBar().showMessage(f"Anchors refreshed: {label} basis.", 1000)
 
     def go_to_bookmark(self, page_index: int) -> None:
         window = self.window
@@ -194,7 +231,6 @@ class NavigationController:
                 model.color or (1, 0, 0),
             )
             window.mark_dirty()
-            window.navigation_anchor_dirty = True
             if getattr(window, "view_mode", "single") == "continuous":
                 window.annotation_controller.refresh_continuous_page_after_geometry_edit(model.page_index, model.xref)
             else:
@@ -211,13 +247,12 @@ class NavigationController:
         window = self.window
         if window.doc is None:
             return
-        try:
-            anchor_data = scan_document_anchor_data(window.doc)
-        except Exception as exc:
-            main_window_dialogs.show_warning(window, "Go to Ref", f"Could not scan anchors:\n{exc}")
+        result = resolve_anchor_reference(window.doc, reference, window.anchor_page_basis)
+        if result is not None:
+            if result.fallback_used:
+                label = "Book page" if result.matched_basis == "book" else "Physical page"
+                window.statusBar().showMessage(f"Switched to {label} basis.", 1000)
+                window.log_debug(f"Anchor ref fallback: {reference} -> {result.anchor.reference}")
+            self.go_to_anchor(result.anchor.page_index, result.anchor.xref)
             return
-        for anchor in anchor_data.anchors:
-            if anchor.reference == reference:
-                self.go_to_anchor(anchor.page_index, anchor.xref)
-                return
         main_window_dialogs.show_warning(window, "Go to Ref", f"Anchor not found: {reference}")

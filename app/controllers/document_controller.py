@@ -732,6 +732,7 @@ class DocumentController:
             session.path = current_path
             session.page_index = window.page_index
             session.selected_annotation_id = selected_annotation_id
+            session.freetext_snapshot = None
         window.render_page(preserve_selection=selected_annotation_id is not None, keep_view_position=True)
         window.log_debug(f"Reopen after Save Incremental completed: {current_path} pages={len(window.doc)}")
 
@@ -785,6 +786,7 @@ class DocumentController:
                 session.doc = window.doc
                 session.path = current_path
                 session.page_index = window.page_index
+                session.freetext_snapshot = None
             window.render_page(preserve_selection=True)
             window.log_debug(f"Full save reopened rewritten PDF: {current_path} pages={len(window.doc)}")
             return backup_path
@@ -805,6 +807,7 @@ class DocumentController:
                             session.doc = window.doc
                             session.path = current_path
                             session.page_index = window.page_index
+                            session.freetext_snapshot = None
                         window.render_page(preserve_selection=True)
                     else:
                         window.doc.close()

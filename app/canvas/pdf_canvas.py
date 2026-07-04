@@ -205,14 +205,24 @@ class AnnotationScene(QGraphicsScene):
             if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
                 super().mouseDoubleClickEvent(event)
                 return
-            if self.owner.on_continuous_scene_mouse_double_click(event.scenePos()):
+            if event.button() == Qt.MouseButton.RightButton and self.owner.on_annotation_tool_blank_right_double_click(
+                event.scenePos()
+            ):
+                return
+            if event.button() == Qt.MouseButton.LeftButton and self.owner.on_continuous_scene_mouse_double_click(
+                event.scenePos()
+            ):
                 return
             super().mouseDoubleClickEvent(event)
             return
         if self.owner.is_inline_freetext_editor_hit(event.scenePos()):
             super().mouseDoubleClickEvent(event)
             return
-        if self.owner.on_scene_mouse_double_click(event.scenePos()):
+        if event.button() == Qt.MouseButton.RightButton and self.owner.on_annotation_tool_blank_right_double_click(
+            event.scenePos()
+        ):
+            return
+        if event.button() == Qt.MouseButton.LeftButton and self.owner.on_scene_mouse_double_click(event.scenePos()):
             return
         super().mouseDoubleClickEvent(event)
 

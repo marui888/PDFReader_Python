@@ -657,6 +657,23 @@ class CanvasController:
         self.refresh_continuous_current_page_ui()
         return True
 
+    def select_continuous_annotation_by_xref(self, page_index: int, xref: int) -> bool:
+        window = self.window
+        if window.doc is None or window.view_mode != "continuous":
+            return False
+        page_index = max(0, min(page_index, len(window.doc) - 1))
+        models = self.continuous_load_page_annotations(page_index)
+        target_model = next((model for model in models if model.xref == xref), None)
+        if target_model is None or not target_model.is_supported:
+            return False
+
+        window.page_index = page_index
+        window.current_annotations = models
+        window.annotation_model_map[target_model.id] = target_model
+        window.select_annotation(target_model.id, center_on=False)
+        self.refresh_continuous_current_page_ui()
+        return True
+
     def scroll_continuous_rect_into_view(self, page_index: int, rect: fitz.Rect, margin: int = 40) -> None:
         window = self.window
         if window.doc is None:

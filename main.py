@@ -27,25 +27,36 @@ from app.models.annotation_model import (
     EDITABLE_APP_TYPES,
     AnnotationModel,
 )
+from app.anchors import text_affects_anchor_data
 from app.models.continuous_view import PageLayout, PageViewItem
 from app.canvas.pdf_canvas import AnnotationScene, PdfCanvasView
 from app.canvas.inline_freetext_editor import InlineFreeTextEditorManager
 from app.services.freetext_batch import FreeTextMatch
 from app.services.freetext_batch import add_text_to_match
 from app.services.freetext_batch import delete_match_text
-from app.services.freetext_batch import find_freetext_matches
 from app.services.freetext_batch import replace_match_text
+from app.services.freetext_batch import replace_match_text_with_mode
+from app.services.freetext_batch import preview_replace_text_with_mode
+from app.services.freetext_snapshot import FreeTextSnapshot
 from app.services.pdf_audit import audit_current_page as run_audit_current_page
 from app.services.pdf_audit import audit_document_summary as run_audit_document_summary
 from app.services.pdf_audit import format_audit_report
 from app.services.pdf_annotation_writer import PdfAnnotationWriter
+from app.services.page_labels import page_index_for_label
+from app.services.page_labels import page_labels_json
+from app.services.page_labels import parse_page_labels_json
 from app.services.settings import AppSettings, load_settings, save_settings, settings_path
 from app.services.shortcuts import apply_shortcuts as apply_window_shortcuts
+from app.services.text_match import InvalidRegexError
+from app.widgets.page_labels_dialog import PageLabelsDialog
+from app.widgets.freetext_batch import BatchReplacePreviewDialog
 from app.models.undo import UndoAction
-from PySide6.QtCore import QPointF, QRectF, Qt, QThread, QTimer, Slot
+from PySide6.QtCore import QPointF, QRectF, QSize, QSizeF, Qt, QThread, QTimer, Slot
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QApplication,
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
     QGraphicsItem,
     QGraphicsPixmapItem,
@@ -79,6 +90,7 @@ class MainWindow(QMainWindow):
         self.quick_audit_detailed = False
         self.qpdf_bin_dir = r"D:\tools\qpdf-12.3.2-msvc64\bin"
         self.save_incremental_safety_default = True
+        self.anchor_page_basis = "physical"
         self.search_page_size = 500
         self.keyword_groups = load_keyword_groups(self.keyword_metadata_dir())
         self.recent_files: list[dict] = []
@@ -118,6 +130,8 @@ class MainWindow(QMainWindow):
         self.navigation_widget: object | None = None
         self.navigation_anchor_doc_id: int | None = None
         self.navigation_anchor_dirty = True
+        self.navigation_anchor_manual_refresh_required = False
+        self.navigation_anchor_manual_refresh_doc_id: int | None = None
         self.annotation_controller = AnnotationController(self)
         self.canvas_controller = CanvasController(self)
         self.document_controller = DocumentController(self)
@@ -188,6 +202,7 @@ class MainWindow(QMainWindow):
         self.document_tabs = QTabBar()
         self.document_tabs.setExpanding(False)
         self.document_tabs.setMovable(False)
+        self.document_tabs.setIconSize(QSize(8, 8))
         self.document_tabs.setVisible(False)
         self.document_tabs.setStyleSheet(
             """
@@ -195,8 +210,9 @@ class MainWindow(QMainWindow):
                 background: #e7e7e7;
                 border: 1px solid #b8b8b8;
                 border-bottom-color: #8f8f8f;
-                padding: 5px 12px;
-                margin-right: 2px;
+                padding: 2px 6px;
+                margin-right: 1px;
+                min-height: 18px;
             }
             QTabBar::tab:selected {
                 background: white;
@@ -568,12 +584,18 @@ class MainWindow(QMainWindow):
 
     def mark_dirty(self) -> None:
         self.is_dirty = True
-        self.navigation_anchor_dirty = True
         self.canvas_controller.invalidate_continuous_annotation_cache(self.page_index)
         if self.active_session_index is not None and 0 <= self.active_session_index < len(self.sessions):
             self.sessions[self.active_session_index].is_dirty = True
             self.update_document_tab_title(self.active_session_index)
         self.update_window_title()
+
+    def mark_navigation_anchors_dirty(self) -> None:
+        self.navigation_anchor_dirty = True
+        self.navigation_anchor_manual_refresh_required = True
+        self.navigation_anchor_manual_refresh_doc_id = id(self.doc) if self.doc is not None else None
+        if self.navigation_widget is not None:
+            self.navigation_widget.set_anchor_dirty(True)
 
     def clear_dirty(self) -> None:
         self.is_dirty = False
@@ -621,6 +643,51 @@ class MainWindow(QMainWindow):
         self.update_current_recent_page()
         self.save_active_session_state()
 
+    def go_to_book_label(self) -> None:
+        if self.doc is None:
+            return
+        label = self.book_label_input.text().strip()
+        if not label:
+            self.sync_page_spin()
+            return
+        target_index = page_index_for_label(self.doc, label)
+        if target_index is None:
+            main_window_dialogs.show_warning(self, "Book Page", f"Book page label not found:\n{label}")
+            self.sync_page_spin()
+            return
+        self.go_to_page(target_index + 1)
+
+    def show_page_labels_dialog(self) -> None:
+        if self.doc is None:
+            main_window_dialogs.show_warning(self, "Page Labels", "No PDF is open.")
+            return
+        dialog = PageLabelsDialog(page_labels_json(self.doc), self.apply_page_labels_json, self)
+        dialog.exec()
+
+    def apply_page_labels_json(self, source: str) -> bool:
+        if self.doc is None:
+            main_window_dialogs.show_warning(self, "Page Labels", "No PDF is open.")
+            return False
+        original_labels = self.doc.get_page_labels()
+        try:
+            rules = parse_page_labels_json(source, len(self.doc))
+            self.doc.set_page_labels(rules)
+        except Exception as exc:
+            main_window_dialogs.show_error(self, "Page Labels", exc)
+            return False
+
+        if self.save_incremental(confirm=True):
+            self.sync_page_spin()
+            return True
+
+        try:
+            if self.doc is not None:
+                self.doc.set_page_labels(original_labels)
+        except Exception as exc:
+            self.log_debug(f"Restore Page Labels after canceled save failed: {exc}")
+        self.sync_page_spin()
+        return False
+
     def record_view_location_before_navigation(self) -> None:
         self.view_history_controller.record_before_navigation()
 
@@ -658,6 +725,7 @@ class MainWindow(QMainWindow):
         self.quick_audit_detailed = settings.quick_audit_detailed
         self.qpdf_bin_dir = settings.qpdf_bin_dir
         self.save_incremental_safety_default = settings.save_incremental_safety_default
+        self.anchor_page_basis = settings.anchor_page_basis
         self.search_page_size = settings.search_page_size
         self.recent_files = settings.recent_files
         self.recent_search_rule_files = settings.recent_search_rule_files
@@ -677,6 +745,7 @@ class MainWindow(QMainWindow):
             quick_audit_detailed=self.quick_audit_detailed,
             qpdf_bin_dir=self.qpdf_bin_dir,
             save_incremental_safety_default=self.save_incremental_safety_default,
+            anchor_page_basis=self.anchor_page_basis,
             search_page_size=self.search_page_size,
             recent_files=self.recent_files,
             recent_search_rule_files=self.recent_search_rule_files,
@@ -798,6 +867,9 @@ class MainWindow(QMainWindow):
 
     def select_continuous_annotation_at_scene_pos(self, scene_pos: QPointF) -> bool:
         return self.canvas_controller.select_continuous_annotation_at_scene_pos(scene_pos)
+
+    def select_continuous_annotation_by_xref(self, page_index: int, xref: int) -> bool:
+        return self.canvas_controller.select_continuous_annotation_by_xref(page_index, xref)
 
     def defer_scroll_to_page_top_left(self) -> None:
         QTimer.singleShot(0, self.scroll_to_page_top_left)
@@ -944,6 +1016,9 @@ class MainWindow(QMainWindow):
 
     def on_scene_mouse_double_click(self, scene_pos: QPointF | None = None) -> bool:
         return self.annotation_controller.on_scene_mouse_double_click(scene_pos)
+
+    def on_annotation_tool_blank_right_double_click(self, scene_pos: QPointF | None = None) -> bool:
+        return self.annotation_controller.on_annotation_tool_blank_right_double_click(scene_pos)
 
     def move_pdf_annotation(self, model: AnnotationModel, dx: float, dy: float) -> None:
         if self.doc is None:
@@ -1102,6 +1177,9 @@ class MainWindow(QMainWindow):
 
     def refresh_navigation(self) -> None:
         self.navigation_controller.refresh_navigation()
+
+    def refresh_navigation_anchors(self) -> None:
+        self.navigation_controller.refresh_navigation_anchors()
 
     def go_to_bookmark(self, page_index: int) -> None:
         self.navigation_controller.go_to_bookmark(page_index)
@@ -1518,27 +1596,100 @@ class MainWindow(QMainWindow):
     def refresh_annotations_table(self) -> None:
         main_window_docks.refresh_annotations_table(self)
 
-    def find_batch_freetext(self, keyword: str, scope: str) -> None:
+    def active_freetext_snapshot(self) -> FreeTextSnapshot | None:
+        if self.active_session_index is None:
+            return None
+        if self.active_session_index < 0 or self.active_session_index >= len(self.sessions):
+            return None
+        snapshot = self.sessions[self.active_session_index].freetext_snapshot
+        return snapshot if isinstance(snapshot, FreeTextSnapshot) else None
+
+    def ensure_freetext_snapshot(self) -> FreeTextSnapshot | None:
+        if self.doc is None or self.active_session_index is None:
+            return None
+        if self.active_session_index < 0 or self.active_session_index >= len(self.sessions):
+            return None
+        session = self.sessions[self.active_session_index]
+        snapshot = session.freetext_snapshot
+        if not isinstance(snapshot, FreeTextSnapshot):
+            snapshot = FreeTextSnapshot.from_document(self.doc)
+            session.freetext_snapshot = snapshot
+            self.log_debug(
+                "Batch FreeText snapshot built: "
+                f"path={session.path} records={len(snapshot.records)} warnings={len(snapshot.warnings)}"
+            )
+        return snapshot
+
+    def clear_active_freetext_snapshot(self) -> None:
+        if self.active_session_index is None:
+            return
+        if 0 <= self.active_session_index < len(self.sessions):
+            self.sessions[self.active_session_index].freetext_snapshot = None
+
+    def update_freetext_snapshot_text(self, page_index: int, xref: int, text: str) -> None:
+        snapshot = self.active_freetext_snapshot()
+        if snapshot is not None:
+            snapshot.update_text(page_index, xref, text)
+
+    def remove_freetext_snapshot_record(self, page_index: int, xref: int) -> None:
+        snapshot = self.active_freetext_snapshot()
+        if snapshot is not None:
+            snapshot.remove(page_index, xref)
+
+    def show_invalid_regex_error(self, exc: InvalidRegexError) -> None:
+        main_window_dialogs.show_warning(
+            self,
+            "Invalid Regex",
+            f"Invalid regex:\n{exc.pattern}\n\n{exc.error}",
+        )
+
+    def find_batch_freetext(
+        self,
+        include_terms: list,
+        include_mode: str = "and",
+        exclude_terms: list[str] | None = None,
+        exclude_mode: str = "or",
+        scope: str = "current_page",
+    ) -> None:
         if self.doc is None:
             if self.batch_freetext_widget is not None:
                 self.batch_freetext_widget.set_message("No PDF open.")
             return
-        if not keyword.strip():
+        include_terms = [term for term in include_terms if (term.get("text", "").strip() if isinstance(term, dict) else str(term).strip())]
+        exclude_terms = [term.strip() for term in (exclude_terms or []) if term.strip()]
+        if not include_terms and not exclude_terms:
             if self.batch_freetext_widget is not None:
-                self.batch_freetext_widget.set_message("Enter text to find FreeText annotations.")
+                self.batch_freetext_widget.set_message("Enter Including or Excluding text to find FreeText annotations.")
             return
 
-        matches, warnings = find_freetext_matches(
-            self.doc,
-            keyword,
-            current_page_index=self.page_index,
-            scope=scope,
-        )
-        if self.batch_freetext_widget is not None:
-            self.batch_freetext_widget.set_results(matches, warnings)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            snapshot = self.ensure_freetext_snapshot()
+            if snapshot is None:
+                matches, warnings = [], []
+            else:
+                matches, warnings = snapshot.find(
+                    self.doc,
+                    include_terms,
+                    include_mode,
+                    exclude_terms,
+                    exclude_mode,
+                    current_page_index=self.page_index,
+                    scope=scope,
+                )
+            if self.batch_freetext_widget is not None:
+                self.batch_freetext_widget.set_results(matches, warnings)
+        except InvalidRegexError as exc:
+            self.show_invalid_regex_error(exc)
+            self.log_debug(f"Batch FreeText invalid regex: {exc}")
+            return
+        finally:
+            QApplication.restoreOverrideCursor()
         scope_text = "current document" if scope == "current_document" else "current page"
         self.log_debug(
-            f"Batch FreeText find: scope={scope_text} keyword={keyword!r} "
+            "Batch FreeText find: "
+            f"scope={scope_text} include_mode={include_mode!r} include={include_terms!r} "
+            f"exclude_mode={exclude_mode!r} exclude={exclude_terms!r} "
             f"results={len(matches)} warnings={len(warnings)}"
         )
 
@@ -1552,8 +1703,12 @@ class MainWindow(QMainWindow):
             found = self.scroll_continuous_to_xref(self.page_index, xref)
             self.update_current_recent_page()
             if found:
+                selected = self.select_continuous_annotation_by_xref(self.page_index, xref)
                 self.statusBar().showMessage(f"Jumped to FreeText result on page {self.page_index + 1}.")
-                self.log_debug(f"Batch FreeText jumped in continuous view: page={self.page_index + 1} xref={xref}")
+                self.log_debug(
+                    "Batch FreeText jumped in continuous view: "
+                    f"page={self.page_index + 1} xref={xref} selected={selected}"
+                )
             else:
                 main_window_dialogs.show_warning(
                     self,
@@ -1577,38 +1732,193 @@ class MainWindow(QMainWindow):
             )
             self.log_debug(f"Batch FreeText jump failed: page={self.page_index + 1} xref={xref}")
 
-    def replace_selected_batch_freetext(self, replacement: str) -> None:
+    def replace_selected_batch_freetext(self, options) -> None:
         result = self.selected_batch_freetext_result()
         if result is None:
             return
         keyword = self.batch_freetext_keyword()
-        changed = self.apply_batch_freetext_text_change(
-            [result],
-            lambda text: replace_match_text(text, keyword, replacement),
-            "Replace Selected FreeText",
-        )
+        replacement, whole_word, regex = self.batch_freetext_replace_options(options)
+        try:
+            changed = self.apply_batch_freetext_text_change(
+                [result],
+                lambda text: replace_match_text_with_mode(
+                    text,
+                    keyword,
+                    replacement,
+                    whole_word=whole_word,
+                    regex=regex,
+                ),
+                "Replace Selected FreeText",
+            )
+        except InvalidRegexError as exc:
+            self.show_invalid_regex_error(exc)
+            self.log_debug(f"Batch FreeText Replace Selected invalid regex: {exc}")
+            return
         self.finish_batch_freetext_text_change(changed, "Replaced selected FreeText match text.")
 
-    def replace_all_batch_freetext(self, replacement: str) -> None:
+    def replace_all_batch_freetext(self, options) -> None:
         if self.batch_freetext_widget is None:
             return
         results = list(self.batch_freetext_widget.results)
         if not results:
             main_window_dialogs.show_warning(self, "Batch FreeText", "No FreeText search results to replace.")
             return
-        if not main_window_dialogs.ask_yes_no(
-            self,
-            "Replace All Results",
-            f"Replace matching text in {len(results)} FreeText annotation(s)?",
-        ):
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            try:
+                changed, match_count = self.execute_replace_all_batch_freetext(options, results)
+            except InvalidRegexError as exc:
+                self.show_invalid_regex_error(exc)
+                self.log_debug(f"Batch FreeText Replace All invalid regex: {exc}")
+                return
+        finally:
+            QApplication.restoreOverrideCursor()
+        self.show_batch_freetext_modified_message(changed, match_count)
+
+    def preview_replace_all_batch_freetext(self, options) -> None:
+        if self.batch_freetext_widget is None:
             return
+        results = list(self.batch_freetext_widget.results)
+        if not results:
+            main_window_dialogs.show_warning(self, "Batch FreeText", "No FreeText search results to preview.")
+            return
+        self.show_batch_freetext_replace_preview(options, results)
+
+    def show_regex_help(self) -> None:
+        help_path = Path(__file__).with_name("Regex_Query_Replace_Examples.txt")
+        if not help_path.exists():
+            main_window_dialogs.show_warning(self, "Regex Help", f"Regex help file not found:\n{help_path}")
+            return
+        try:
+            text = help_path.read_text(encoding="utf-8")
+        except Exception as exc:
+            self.show_error("Regex Help failed", exc)
+            return
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Regex Query and Replace Examples")
+        dialog.resize(820, 640)
+        layout = QVBoxLayout(dialog)
+        text_edit = QPlainTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setPlainText(text)
+        layout.addWidget(text_edit, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def show_batch_freetext_replace_preview(self, options, results: list[FreeTextMatch]) -> None:
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            try:
+                preview_rows = self.batch_freetext_replace_preview_rows(options, results)
+            except InvalidRegexError as exc:
+                self.show_invalid_regex_error(exc)
+                self.log_debug(f"Batch FreeText Replace Preview invalid regex: {exc}")
+                return
+        finally:
+            QApplication.restoreOverrideCursor()
+        dialog = BatchReplacePreviewDialog(preview_rows, self)
+
+        def replace_all_from_preview() -> None:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                try:
+                    changed, match_count = self.execute_replace_all_batch_freetext(options, results)
+                except InvalidRegexError as exc:
+                    self.show_invalid_regex_error(exc)
+                    self.log_debug(f"Batch FreeText Preview Replace All invalid regex: {exc}")
+                    return
+            finally:
+                QApplication.restoreOverrideCursor()
+            if changed > 0:
+                dialog.accept()
+                self.show_batch_freetext_modified_message(changed, match_count)
+
+        dialog.replace_all_requested.connect(replace_all_from_preview)
+        dialog.exec()
+
+    def execute_replace_all_batch_freetext(self, options, results: list[FreeTextMatch]) -> tuple[int, int]:
         keyword = self.batch_freetext_keyword()
+        replacement, whole_word, regex = self.batch_freetext_replace_options(options)
+        match_count = self.batch_freetext_replacement_match_count(options, results)
         changed = self.apply_batch_freetext_text_change(
             results,
-            lambda text: replace_match_text(text, keyword, replacement),
+            lambda text: replace_match_text_with_mode(
+                text,
+                keyword,
+                replacement,
+                whole_word=whole_word,
+                regex=regex,
+            ),
             "Replace All FreeText",
         )
         self.finish_batch_freetext_text_change(changed, f"Replaced match text in {changed} FreeText annotation(s).")
+        return changed, match_count if changed > 0 else 0
+
+    def show_batch_freetext_modified_message(self, changed: int, match_count: int = 0) -> None:
+        if changed <= 0:
+            return
+        main_window_dialogs.show_information(
+            self,
+            "Batch FreeText",
+            f"Modified {changed} FreeText annotation(s), {match_count} match(es).",
+        )
+
+    def batch_freetext_replace_preview_rows(self, options, results: list[FreeTextMatch]) -> list[dict]:
+        keyword = self.batch_freetext_keyword()
+        if not keyword:
+            return []
+        replacement, whole_word, regex = self.batch_freetext_replace_options(options)
+        rows: list[dict] = []
+        preview_results = sorted(
+            self.unique_batch_freetext_targets(results),
+            key=lambda item: (item.page_index, item.xref),
+        )
+        for result in preview_results:
+            try:
+                preview = preview_replace_text_with_mode(
+                    result.text,
+                    keyword,
+                    replacement,
+                    whole_word=whole_word,
+                    regex=regex,
+                )
+            except Exception as exc:
+                self.show_error("Batch FreeText Replace Preview failed", exc)
+                return []
+            if preview.new_text == result.text:
+                continue
+            rows.append(
+                {
+                    "page_number": result.page_index + 1,
+                    "old_text": result.text,
+                    "new_text": preview.new_text,
+                    "old_html": preview.old_html,
+                    "new_html": preview.new_html,
+                    "match_count": preview.match_count,
+                }
+            )
+        return rows
+
+    def batch_freetext_replacement_match_count(self, options, results: list[FreeTextMatch]) -> int:
+        keyword = self.batch_freetext_keyword()
+        if not keyword:
+            return 0
+        replacement, whole_word, regex = self.batch_freetext_replace_options(options)
+        total = 0
+        for result in self.unique_batch_freetext_targets(results):
+            preview = preview_replace_text_with_mode(
+                result.text,
+                keyword,
+                replacement,
+                whole_word=whole_word,
+                regex=regex,
+            )
+            if preview.new_text != result.text:
+                total += preview.match_count
+        return total
 
     def delete_selected_batch_freetext_match(self) -> None:
         result = self.selected_batch_freetext_result()
@@ -1681,6 +1991,20 @@ class MainWindow(QMainWindow):
             return ""
         return self.batch_freetext_widget.current_keyword().strip()
 
+    def batch_freetext_replace_options(self, options) -> tuple[str, bool, bool]:
+        if isinstance(options, dict):
+            return (
+                str(options.get("replacement", "")),
+                bool(options.get("whole_word", False)),
+                bool(options.get("regex", False)),
+            )
+        return str(options), False, False
+
+    def batch_freetext_exclude_keyword(self) -> str:
+        if self.batch_freetext_widget is None:
+            return ""
+        return self.batch_freetext_widget.current_exclude_keyword().strip()
+
     def apply_batch_freetext_text_change(self, results: list[FreeTextMatch], transform, label: str) -> int:
         if self.doc is None:
             return 0
@@ -1689,37 +2013,53 @@ class MainWindow(QMainWindow):
             return 0
         keyword = self.batch_freetext_keyword()
         if not keyword:
-            main_window_dialogs.show_warning(self, "Batch FreeText", "Enter text to find before editing.")
+            main_window_dialogs.show_warning(self, "Batch FreeText", "Enter Replace target text before editing.")
             return 0
 
         changed = 0
-        for result in results:
-            model = self.find_freetext_model_by_xref(result.page_index, result.xref)
-            if model is None:
-                self.log_debug(
-                    f"Batch FreeText skipped missing annotation: page={result.page_index + 1} xref={result.xref}"
-                )
-                continue
-            if keyword not in model.text:
-                self.log_debug(
-                    f"Batch FreeText skipped no-current-match: page={result.page_index + 1} xref={result.xref}"
-                )
-                continue
+        snapshot = self.active_freetext_snapshot()
+        targets_by_page: dict[int, list[FreeTextMatch]] = {}
+        for result in self.unique_batch_freetext_targets(results):
+            targets_by_page.setdefault(result.page_index, []).append(result)
 
-            new_text = transform(model.text)
-            if new_text == model.text:
+        repository = AnnotationRepository(self.doc)
+        for page_index, page_results in sorted(targets_by_page.items()):
+            if page_index < 0 or page_index >= len(self.doc):
                 continue
-            font_size = self.clamp_freetext_font_size(int(round(model.font_size or self.default_freetext_font_size)))
-            color_name = self.annotation_controller.color_name_for_tuple(model.color)
-            color = ANNOTATION_COLORS[color_name]
-            self.annotation_controller.update_freetext_annotation_clean_appearance_on_page(
-                result.page_index,
-                model,
-                new_text,
-                font_size,
-                color,
-            )
-            changed += 1
+            models = {
+                model.xref: model
+                for model in repository.load_page_annotations(page_index)
+                if model.app_type == "freetext" and not model.deleted
+            }
+            for result in page_results:
+                model = models.get(result.xref)
+                if model is None:
+                    self.log_debug(
+                        f"Batch FreeText skipped missing annotation: page={result.page_index + 1} xref={result.xref}"
+                    )
+                    continue
+                try:
+                    new_text = transform(model.text)
+                except Exception as exc:
+                    self.show_error(f"{label} failed", exc)
+                    return changed
+                if new_text == model.text:
+                    continue
+                if text_affects_anchor_data(model.text, new_text):
+                    self.mark_navigation_anchors_dirty()
+                font_size = self.clamp_freetext_font_size(int(round(model.font_size or self.default_freetext_font_size)))
+                color_name = self.annotation_controller.color_name_for_tuple(model.color)
+                color = ANNOTATION_COLORS[color_name]
+                self.annotation_controller.update_freetext_annotation_clean_appearance_on_page(
+                    result.page_index,
+                    model,
+                    new_text,
+                    font_size,
+                    color,
+                )
+                if snapshot is not None:
+                    snapshot.update_text(result.page_index, result.xref, new_text)
+                changed += 1
 
         self.log_debug(f"Batch FreeText edit: label={label!r} results={len(results)} changed={changed}")
         return changed
@@ -1739,6 +2079,7 @@ class MainWindow(QMainWindow):
 
         deleted = 0
         writer = PdfAnnotationWriter(self.doc)
+        snapshot = self.active_freetext_snapshot()
         for result in self.unique_batch_freetext_targets(results):
             model = self.find_freetext_model_by_xref(result.page_index, result.xref)
             if model is None:
@@ -1749,6 +2090,10 @@ class MainWindow(QMainWindow):
                 continue
             page = self.doc[result.page_index]
             writer.delete_annotation(page, result.xref)
+            if text_affects_anchor_data(model.text, ""):
+                self.mark_navigation_anchors_dirty()
+            if snapshot is not None:
+                snapshot.remove(result.page_index, result.xref)
             deleted += 1
 
         self.log_debug(f"Batch FreeText delete: label={label!r} results={len(results)} deleted={deleted}")
@@ -1776,7 +2121,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{status_message} Use Save to persist.")
         if self.batch_freetext_widget is not None:
             self.find_batch_freetext(
-                self.batch_freetext_widget.current_keyword(),
+                self.batch_freetext_widget.current_include_conditions(),
+                self.batch_freetext_widget.current_include_mode(),
+                self.batch_freetext_widget.current_exclude_terms(),
+                self.batch_freetext_widget.current_exclude_mode(),
                 self.batch_freetext_widget.current_scope(),
             )
 
@@ -1793,7 +2141,10 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"{status_message} Use Save to persist.")
         if self.batch_freetext_widget is not None:
             self.find_batch_freetext(
-                self.batch_freetext_widget.current_keyword(),
+                self.batch_freetext_widget.current_include_conditions(),
+                self.batch_freetext_widget.current_include_mode(),
+                self.batch_freetext_widget.current_exclude_terms(),
+                self.batch_freetext_widget.current_exclude_mode(),
                 self.batch_freetext_widget.current_scope(),
             )
 
@@ -1951,6 +2302,11 @@ class MainWindow(QMainWindow):
                 self.select_annotation(None)
             return
         try:
+            scene_size = self.tight_new_freetext_scene_size(
+                text,
+                scene_size,
+                self.default_freetext_font_size,
+            )
             scene_rect = QRectF(scene_pos, scene_size)
             if self.view_mode == "continuous" and edit_page_index is not None:
                 rect = self.annotation_controller.continuous_pdf_rect_from_scene_points(
@@ -1968,12 +2324,16 @@ class MainWindow(QMainWindow):
                 )
                 xref = annot.xref
                 self.mark_dirty()
+                if text_affects_anchor_data("", text):
+                    self.mark_navigation_anchors_dirty()
+                self.update_freetext_snapshot_text(edit_page_index, xref, text)
                 self.record_add_undo("Add FreeText", edit_page_index, xref)
                 self.annotation_controller.refresh_continuous_page_after_geometry_edit(edit_page_index, xref)
                 self.set_active_tool("freetext")
             else:
                 rect = self.pdf_rect_from_scene_rect(scene_rect)
                 xref = self.create_freetext_annotation(rect, text)
+                self.update_freetext_snapshot_text(self.page_index, xref, text)
                 self.record_add_undo("Add FreeText", self.page_index, xref)
                 self.set_active_tool("freetext")
             self.statusBar().showMessage(f"Added FreeText xref={xref}. Use Save to persist.")
@@ -2036,6 +2396,7 @@ class MainWindow(QMainWindow):
         try:
             font_size = int(model.font_size or self.default_freetext_font_size)
             color = model.color or (1, 0, 0)
+            scene_size = self.tight_new_freetext_scene_size(text, scene_size, font_size)
             scene_rect = QRectF(scene_pos, scene_size)
             if self.view_mode == "continuous":
                 edit_page_index = page_index if page_index is not None else model.page_index
@@ -2053,6 +2414,7 @@ class MainWindow(QMainWindow):
                     color,
                 )
                 self.mark_dirty()
+                self.update_freetext_snapshot_text(edit_page_index, model.xref, text)
                 self.annotation_controller.refresh_continuous_page_after_geometry_edit(edit_page_index, model.xref)
             else:
                 rect = self.pdf_rect_from_scene_rect(scene_rect)
@@ -2065,6 +2427,7 @@ class MainWindow(QMainWindow):
                     color,
                 )
                 self.mark_dirty()
+                self.update_freetext_snapshot_text(self.page_index, model.xref, text)
                 self.refresh_annotation_overlay(preserve_selection=True)
             self.statusBar().showMessage(f"Edited FreeText xref={model.xref}. Use Save to persist.")
             self.log_debug(f"Inline FreeText edited: xref={model.xref} chars={len(text)}")
@@ -2142,6 +2505,41 @@ class MainWindow(QMainWindow):
         line_count = max(1, len(text.splitlines()))
         height = ceil(max(10.0, line_count * font_size * 1.15 + 2.0))
         return width, float(height)
+
+    def tight_inline_freetext_scene_size(self, text: str, scene_size, font_size: int):
+        width_scene = max(12.0, float(scene_size.width()))
+        width_pdf = max(1.0, width_scene / max(0.01, self.zoom))
+        line_count = self.estimated_wrapped_freetext_line_count(text, font_size, width_pdf)
+        # PDF FreeText appearance generation needs more vertical room than the
+        # QGraphicsTextItem visual bounds. Too-tight rectangles can render as
+        # blank in the overlay or external PDF readers.
+        height_pdf = ceil(max(12.0, line_count * font_size * 1.35 + 6.0))
+        return QSizeF(width_scene, max(14.0, height_pdf * self.zoom))
+
+    def tight_new_freetext_scene_size(self, text: str, scene_size, font_size: int):
+        original_width_scene = max(12.0, float(scene_size.width()))
+        estimated_width_pdf = self.estimated_freetext_width(text, font_size) + 4.0
+        tight_width_scene = max(24.0, min(original_width_scene, ceil(estimated_width_pdf * self.zoom)))
+        return self.tight_inline_freetext_scene_size(text, QSizeF(tight_width_scene, scene_size.height()), font_size)
+
+    def estimated_wrapped_freetext_line_count(self, text: str, font_size: int, width_pdf: float) -> int:
+        line_count = 0
+        max_width = max(1.0, width_pdf - 1.0)
+        for paragraph in text.splitlines() or [""]:
+            if not paragraph:
+                line_count += 1
+                continue
+            current_width = 0.0
+            paragraph_lines = 1
+            for char in paragraph:
+                char_width = font_size * (1.0 if ord(char) > 127 else 0.55)
+                if current_width > 0 and current_width + char_width > max_width:
+                    paragraph_lines += 1
+                    current_width = char_width
+                else:
+                    current_width += char_width
+            line_count += paragraph_lines
+        return max(1, line_count)
 
     def estimated_freetext_width(self, text: str, font_size: int) -> float:
         longest_line = max(text.splitlines() or [text], key=len)

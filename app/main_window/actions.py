@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QLabel, QMenu, QSpinBox, QToolBar, QToolButton
+from PySide6.QtWidgets import QLabel, QLineEdit, QMenu, QSpinBox, QToolBar, QToolButton
 
 from app.models.annotation_model import QUICK_HIGHLIGHT_COLORS
 
@@ -87,6 +87,9 @@ def create_actions(window) -> None:
     window.edit_annotation_action = QAction("Annotation Properties", window)
     window.edit_annotation_action.triggered.connect(window.show_annotation_properties)
 
+    window.page_labels_action = QAction("Page Labels...", window)
+    window.page_labels_action.triggered.connect(window.show_page_labels_dialog)
+
     window.exit_action = QAction("Exit", window)
     window.exit_action.triggered.connect(window.close)
 
@@ -110,6 +113,11 @@ def create_actions(window) -> None:
     window.page_spin.valueChanged.connect(window.go_to_page)
 
     window.page_count_label = QLabel("/ 0")
+    window.book_label_input = QLineEdit()
+    window.book_label_input.setEnabled(False)
+    window.book_label_input.setFixedWidth(90)
+    window.book_label_input.setPlaceholderText("Book")
+    window.book_label_input.returnPressed.connect(window.go_to_book_label)
 
     window.zoom_out_action = QAction("Zoom -", window)
     window.zoom_out_action.triggered.connect(window.zoom_out)
@@ -242,6 +250,8 @@ def create_menus(window) -> None:
     edit_menu.addSeparator()
     edit_menu.addAction(window.edit_annotation_action)
     edit_menu.addAction(window.delete_annotation_action)
+    edit_menu.addSeparator()
+    edit_menu.addAction(window.page_labels_action)
 
     view_menu = window.menuBar().addMenu("View")
     view_menu.addAction(window.continuous_view_action)
@@ -272,6 +282,11 @@ def create_menus(window) -> None:
 def create_toolbar(window) -> None:
     toolbar = QToolBar("Main")
     toolbar.setMovable(False)
+    toolbar.setContentsMargins(0, 0, 0, 0)
+    if toolbar.layout() is not None:
+        toolbar.layout().setContentsMargins(0, 0, 0, 0)
+        toolbar.layout().setSpacing(1)
+    toolbar.setStyleSheet("QToolBar { spacing: 1px; padding: 0px; margin: 0px; }")
     window.addToolBar(toolbar)
 
     toolbar.addAction(window.view_back_action)
@@ -283,6 +298,8 @@ def create_toolbar(window) -> None:
     toolbar.addWidget(QLabel("Page"))
     toolbar.addWidget(window.page_spin)
     toolbar.addWidget(window.page_count_label)
+    toolbar.addWidget(QLabel("Book"))
+    toolbar.addWidget(window.book_label_input)
 
     toolbar.addSeparator()
 
@@ -334,6 +351,7 @@ def update_actions(window) -> None:
         window.debug_current_page_state_action,
         window.audit_continuous_view_state_action,
         window.reindex_current_pdf_action,
+        window.page_labels_action,
     ):
         action.setEnabled(has_doc)
     window.delete_annotation_action.setEnabled(has_doc and window.selected_annotation_id is not None)
@@ -369,6 +387,8 @@ def update_actions(window) -> None:
         window.page_spin.setEnabled(False)
         window.page_spin.setMaximum(1)
         window.page_count_label.setText("/ 0")
+        window.book_label_input.clear()
+        window.book_label_input.setEnabled(False)
         return
 
     window.prev_action.setEnabled(window.page_index > 0)
@@ -376,6 +396,7 @@ def update_actions(window) -> None:
     window.page_spin.setEnabled(True)
     window.page_spin.setMaximum(len(window.doc))
     window.page_count_label.setText(f"/ {len(window.doc)}")
+    window.book_label_input.setEnabled(True)
     if is_reindexing:
         for action in (
             window.open_action,

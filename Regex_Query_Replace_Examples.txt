@@ -1,0 +1,379 @@
+Regex Query and Replace Examples
+Date: 2026-07-03
+
+This note summarizes common regex query and replace usage in this PDF annotation app,
+especially for Batch FreeText.
+
+
+1. Where Regex Is Used
+======================
+
+Batch FreeText - Including terms:
+
+  [term] [W] [R]
+
+  W = whole word
+  R = regex
+
+W and R are mutually exclusive.
+
+If R is checked, the term is interpreted as a regular expression.
+If W is checked, the term uses the app's simple whole-word rule:
+
+  left side must be a space or text start
+  right side must be a space or text end
+
+
+Batch FreeText - Replace:
+
+  [Replace:] [A] [With:] [B]
+  [ ] Whole  [ ] Regex
+  [Replace] [Replace All] [Preview...]
+
+If Regex is checked:
+
+  A is interpreted as a regex pattern.
+  B supports capture references such as $1, $2, $3.
+
+
+2. Basic Regex Symbols
+======================
+
+  \d        digit, same as 0-9
+  \d+       one or more digits
+  \d{2,}    at least two digits
+  \d{2}     exactly two digits
+  .         any character except newline
+  .*        any characters, greedy
+  .*?       any characters, non-greedy
+  \s        whitespace
+  \S        non-whitespace
+  ^         start of text
+  $         end of text
+  (...)     capture group
+  \(        literal left parenthesis
+  \)        literal right parenthesis
+
+
+3. Capture Groups: $1, $2, $3
+=============================
+
+Parentheses in regex remember part of the match.
+
+Example:
+
+  Pattern:
+    -(\d+)
+
+  Text:
+    -123
+
+  Result:
+    whole match = -123
+    $1 = 123
+
+Replacement:
+
+  A:
+    -(\d+)
+
+  B:
+    -[$1]
+
+Result:
+
+  -1    -> -[1]
+  -123  -> -[123]
+
+
+Multiple capture groups:
+
+  Pattern:
+    (\d+)-(\d+)
+
+  Text:
+    12-34
+
+  Result:
+    $1 = 12
+    $2 = 34
+
+  Replacement:
+    [$2:$1]
+
+  Output:
+    [34:12]
+
+
+4. Examples Discussed
+=====================
+
+Find a hyphen followed by any number of digits:
+
+  -\d+
+
+Matches:
+
+  -1
+  -12
+  -123
+
+Does not match:
+
+  -abc
+
+
+Find a hyphen and capture the digits:
+
+  -(\d+)
+
+For text:
+
+  -123
+
+Result:
+
+  $1 = 123
+
+
+Wrap the captured digits in square brackets:
+
+  A:
+    -(\d+)
+
+  B:
+    -[$1]
+
+Result:
+
+  -1 -123
+
+becomes:
+
+  -[1] -[123]
+
+
+Delete only hyphen-number values whose number has at least two digits:
+
+  A:
+    -(\d{2,})
+
+  B:
+    leave empty
+
+Matches and deletes:
+
+  -10
+  -15
+  -123
+
+Does not match:
+
+  -1
+  -9
+
+
+5. What Does (?!\d) Mean?
+=========================
+
+  (?!\d)
+
+means:
+
+  from this position, the next character must NOT be a digit.
+
+It is a negative lookahead. It checks the next character, but does not consume it.
+
+Example:
+
+  Pattern:
+    -(\d{2})(?!\d)
+
+This matches exactly two digits after hyphen, but only if there is no third digit.
+
+Text:
+
+  -12
+
+matches.
+
+Text:
+
+  -123
+
+does not match, because after -12 there is still a digit: 3.
+
+For this pattern:
+
+  -(\d{2,})
+
+(?!\d) is usually not necessary, because \d{2,} already consumes all continuous digits.
+
+
+6. Literal Parentheses
+======================
+
+In regex:
+
+  (...)
+
+means capture group.
+
+If the text really contains parentheses, escape them:
+
+  \(
+  \)
+
+
+Capture only the number inside real parentheses:
+
+  Pattern:
+    -\((\d+)\)
+
+Text:
+
+  -(123)
+
+Result:
+
+  $1 = 123
+
+
+Capture the parentheses together with the number:
+
+  Pattern:
+    -(\(\d+\))
+
+Text:
+
+  -(123)
+
+Result:
+
+  $1 = (123)
+
+Replacement:
+
+  -[$1]
+
+Output:
+
+  -[(123)]
+
+
+7. Common Query Patterns
+========================
+
+Any number:
+
+  \d+
+
+At least two digits:
+
+  \d{2,}
+
+Exactly four digits:
+
+  \d{4}
+
+Hyphen followed by digits:
+
+  -\d+
+
+Text inside parentheses:
+
+  \((.*?)\)
+
+Text inside square brackets:
+
+  \[(.*?)\]
+
+Line starts with //mr:
+
+  ^//mr
+
+Contains Pg + number + - + circled number:
+
+  Pg\d+-[①②③④⑤⑥⑦⑧⑨⑩]
+
+
+8. Common Replace Patterns
+==========================
+
+Delete matched text:
+
+  A:
+    -(\d{2,})
+
+  B:
+    leave empty
+
+
+Wrap a number in brackets:
+
+  A:
+    -(\d+)
+
+  B:
+    -[$1]
+
+
+Swap two number groups:
+
+  A:
+    (\d+)-(\d+)
+
+  B:
+    $2-$1
+
+Example:
+
+  12-34 -> 34-12
+
+
+Add prefix to captured text:
+
+  A:
+    (\d+)
+
+  B:
+    No.$1
+
+Example:
+
+  123 -> No.123
+
+
+Convert parentheses to square brackets:
+
+  A:
+    \((.*?)\)
+
+  B:
+    [$1]
+
+Example:
+
+  (abc) -> [abc]
+
+
+9. Notes and Cautions
+=====================
+
+1. Regex and Whole are mutually exclusive in this app.
+
+2. In Regex Replace:
+
+   A is the regex pattern.
+   B is the replacement text.
+   $1, $2, $3 refer to capture groups.
+
+3. If you want to match real parentheses, use:
+
+   \(
+   \)
+
+4. If the regex is invalid, the app will show an error and will not modify annotations.
+
+5. Use Preview... before Replace All when the regex may affect many FreeText annotations.
+

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PySide6.QtWidgets import QLabel
 
+from app.services.page_labels import page_label_for_index
+
 
 def create_scroll_boundary_label(window) -> None:
     window.scroll_boundary_label = QLabel("")
@@ -17,9 +19,13 @@ def sync_page_spin(window) -> None:
     try:
         if window.doc is None:
             window.page_spin.setValue(1)
+            if hasattr(window, "book_label_input"):
+                window.book_label_input.clear()
         else:
             window.page_spin.setMaximum(len(window.doc))
             window.page_spin.setValue(window.page_index + 1)
+            if hasattr(window, "book_label_input"):
+                window.book_label_input.setText(page_label_for_index(window.doc, window.page_index))
     finally:
         window.updating_page_spin = False
 

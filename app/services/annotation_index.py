@@ -9,6 +9,8 @@ import pymupdf as fitz
 
 from app.repositories.annotation_repository import AnnotationRepository
 from app.search.annotation_search_query import AnnotationSearchQuery
+from app.services.text_match import TermCondition
+from app.services.text_match import term_matches
 from app.services.pdf_text_extract import highlight_selected_text
 
 
@@ -275,6 +277,7 @@ class AnnotationIndex:
         query_started = time.perf_counter()
         with self.connect() as connection:
             rows = connection.execute(sql, parameters).fetchall()
+        rows = self.filter_special_include_rows(rows, search_query)
         sqlite_ms = (time.perf_counter() - query_started) * 1000
 
         build_started = time.perf_counter()
@@ -305,6 +308,37 @@ class AnnotationIndex:
             return keyword
         return AnnotationSearchQuery(keyword=str(keyword or ""))
 
+    def filter_special_include_rows(self, rows, query: AnnotationSearchQuery):
+        include_conditions = query.conditions("include")
+        if not any(condition.whole_word or condition.regex for condition in include_conditions):
+            return rows
+        mode = query.normalized_include_mode()
+        filtered = []
+        for row in rows:
+            texts = (
+                str(row["text"] or ""),
+                str(row["content_text"] or ""),
+                str(row["subject_text"] or ""),
+                str(row["selected_text"] or ""),
+            )
+            matches = [
+                any(
+                    term_matches(
+                        text,
+                        TermCondition(
+                            condition.text,
+                            condition.whole_word,
+                            condition.regex,
+                        ),
+                    )
+                    for text in texts
+                )
+                for condition in include_conditions
+            ]
+            if (mode == "any" and any(matches)) or (mode != "any" and all(matches)):
+                filtered.append(row)
+        return filtered
+
     def text_search_where(self, query: AnnotationSearchQuery) -> tuple[str, list[object]]:
         parameters: list[object] = []
         clauses: list[str] = []
@@ -313,20 +347,34 @@ class AnnotationIndex:
 
         if include_terms:
             include_clauses = []
-            for term in include_terms:
-                include_clauses.append(self.any_text_column_like_clause())
-                parameters.extend(self.like_parameters(term))
-            joiner = " OR " if query.normalized_include_mode() == "any" else " AND "
-            clauses.append("(" + joiner.join(include_clauses) + ")")
+            include_conditions = query.conditions("include")
+            skip_include_sql_prefilter = (
+                query.normalized_include_mode() == "any"
+                and any(condition.regex for condition in include_conditions)
+            )
+            if not skip_include_sql_prefilter:
+                for condition in include_conditions:
+                    if condition.regex:
+                        continue
+                    term = condition.normalized_text()
+                    include_clauses.append(self.any_text_column_like_clause())
+                    parameters.extend(self.like_parameters(term))
+            if include_clauses:
+                joiner = " OR " if query.normalized_include_mode() == "any" else " AND "
+                clauses.append("(" + joiner.join(include_clauses) + ")")
         else:
             keyword = query.normalized_keyword()
             if keyword:
                 clauses.append(self.any_text_column_like_clause())
                 parameters.extend(self.like_parameters(keyword))
 
-        for term in exclude_terms:
-            clauses.append("NOT " + self.any_text_column_like_clause())
-            parameters.extend(self.like_parameters(term))
+        if exclude_terms:
+            exclude_clauses = []
+            for term in exclude_terms:
+                exclude_clauses.append(self.any_text_column_like_clause())
+                parameters.extend(self.like_parameters(term))
+            joiner = " AND " if query.normalized_exclude_mode() == "all" else " OR "
+            clauses.append("NOT (" + joiner.join(exclude_clauses) + ")")
 
         return (" AND ".join(clauses), parameters)
 

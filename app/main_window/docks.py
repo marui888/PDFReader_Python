@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QDockWidget,
@@ -72,6 +73,8 @@ def show_current_page_annotations(window) -> None:
         window.batch_freetext_widget.result_activated.connect(window.jump_to_batch_freetext_result)
         window.batch_freetext_widget.replace_selected_requested.connect(window.replace_selected_batch_freetext)
         window.batch_freetext_widget.replace_all_requested.connect(window.replace_all_batch_freetext)
+        window.batch_freetext_widget.replace_preview_requested.connect(window.preview_replace_all_batch_freetext)
+        window.batch_freetext_widget.regex_help_requested.connect(window.show_regex_help)
         window.batch_freetext_widget.delete_selected_requested.connect(window.delete_selected_batch_freetext_match)
         window.batch_freetext_widget.add_selected_requested.connect(window.add_selected_batch_freetext)
         window.batch_freetext_widget.delete_selected_annotation_requested.connect(
@@ -227,7 +230,17 @@ def toggle_search_dock_maximized(window) -> None:
         window.annotation_search_maximized = False
     else:
         window.annotation_search_restore_geometry = window.annotation_search_dock.saveGeometry()
-        window.annotation_search_dock.showMaximized()
+        window.annotation_search_dock.showNormal()
+        screen = window.annotation_search_dock.screen() or QApplication.primaryScreen()
+        if screen is not None:
+            available = screen.availableGeometry()
+            frame = window.annotation_search_dock.frameGeometry()
+            client = window.annotation_search_dock.geometry()
+            left = client.left() - frame.left()
+            top = client.top() - frame.top()
+            right = frame.right() - client.right()
+            bottom = frame.bottom() - client.bottom()
+            window.annotation_search_dock.setGeometry(available.adjusted(left, top, -right, -bottom))
         window.annotation_search_maximized = True
     update_search_dock_maximize_state(window)
 
@@ -248,6 +261,7 @@ def show_navigation(window) -> None:
         window.navigation_widget.anchor_activated.connect(window.go_to_anchor)
         window.navigation_widget.anchor_insert_requested.connect(window.insert_anchor_reference)
         window.navigation_widget.reference_source_activated.connect(window.go_to_anchor_reference_source)
+        window.navigation_widget.anchors_refresh_requested.connect(window.refresh_navigation_anchors)
         window.navigation_dock.setWidget(window.navigation_widget)
         window.navigation_dock.setMinimumWidth(40)
         window.navigation_widget.setMinimumWidth(40)

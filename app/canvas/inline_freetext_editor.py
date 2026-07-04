@@ -175,14 +175,19 @@ class InlineFreeTextEdit(QPlainTextEdit):
 
 
 class InlineFreeTextGraphicsEdit(QGraphicsTextItem):
+    EMPTY_CARET_PLACEHOLDER = " "
+
     def __init__(
         self,
         text: str,
         accepted_callback: Callable[[str], None],
+        canceled_callback: Callable[[], None] | None = None,
         keyword_groups: list[KeywordGroup] | None = None,
     ) -> None:
-        super().__init__(text)
+        self.empty_placeholder_active = text == ""
+        super().__init__(self.EMPTY_CARET_PLACEHOLDER if self.empty_placeholder_active else text)
         self.accepted_callback = accepted_callback
+        self.canceled_callback = canceled_callback
         self.keyword_groups = keyword_groups or []
         self.keyword_popup: KeywordPopup | None = None
         self.setTextInteractionFlags(Qt.TextInteractionFlag.TextEditorInteraction)
@@ -190,18 +195,65 @@ class InlineFreeTextGraphicsEdit(QGraphicsTextItem):
         self.document().setDocumentMargin(0)
         self.setFlag(QGraphicsTextItem.GraphicsItemFlag.ItemIsFocusable, True)
 
+    def toPlainText(self) -> str:
+        text = super().toPlainText()
+        if text == self.EMPTY_CARET_PLACEHOLDER:
+            return ""
+        if self.empty_placeholder_active and text.startswith(self.EMPTY_CARET_PLACEHOLDER):
+            return text[len(self.EMPTY_CARET_PLACEHOLDER) :]
+        return text
+
+    def clear_empty_placeholder(self) -> None:
+        if not self.empty_placeholder_active:
+            return
+        self.empty_placeholder_active = False
+        super().setPlainText("")
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.Start)
+        self.setTextCursor(cursor)
+
+    def ensure_empty_placeholder_if_needed(self) -> None:
+        if self.empty_placeholder_active or super().toPlainText():
+            return
+        self.empty_placeholder_active = True
+        super().setPlainText(self.EMPTY_CARET_PLACEHOLDER)
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        self.setTextCursor(cursor)
+
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() == Qt.Key.Key_Escape:
+            if self.empty_placeholder_active and self.canceled_callback is not None:
+                self.canceled_callback()
+                event.accept()
+                return
             self.accepted_callback(self.toPlainText())
             event.accept()
             return
         if event.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and (
             event.modifiers() & Qt.KeyboardModifier.ControlModifier
         ):
+            if self.empty_placeholder_active and self.canceled_callback is not None:
+                self.canceled_callback()
+                event.accept()
+                return
             self.accepted_callback(self.toPlainText())
             event.accept()
             return
+        if self.empty_placeholder_active:
+            if event.key() in (Qt.Key.Key_Backspace, Qt.Key.Key_Delete):
+                event.accept()
+                return
+            if event.text():
+                self.clear_empty_placeholder()
         super().keyPressEvent(event)
+        self.ensure_empty_placeholder_if_needed()
+
+    def inputMethodEvent(self, event) -> None:
+        if self.empty_placeholder_active and (event.commitString() or event.preeditString()):
+            self.clear_empty_placeholder()
+        super().inputMethodEvent(event)
+        self.ensure_empty_placeholder_if_needed()
 
     def contextMenuEvent(self, event) -> None:
         self.show_context_menu(event.screenPos())
@@ -252,6 +304,7 @@ class InlineFreeTextGraphicsEdit(QGraphicsTextItem):
         return True
 
     def insert_text_at_cursor(self, text: str) -> None:
+        self.clear_empty_placeholder()
         cursor = self.textCursor()
         cursor.insertText(text)
         self.setTextCursor(cursor)
@@ -268,6 +321,7 @@ class InlineFreeTextGraphicsEdit(QGraphicsTextItem):
         QApplication.clipboard().setText(cursor.selectedText().replace("\u2029", "\n"))
         cursor.removeSelectedText()
         self.setTextCursor(cursor)
+        self.ensure_empty_placeholder_if_needed()
 
     def select_all_text(self) -> None:
         cursor = self.textCursor()
@@ -390,7 +444,7 @@ class InlineFreeTextEditorManager:
         zoom = self.zoom_getter()
         font = QFont("Arial")
         font.setPixelSize(max(1, int(round(font_size * zoom))))
-        editor = InlineFreeTextGraphicsEdit(text, self.accept_graphics, self.keyword_groups)
+        editor = InlineFreeTextGraphicsEdit(text, self.accept_graphics, self.cancel, self.keyword_groups)
         editor.setFont(font)
         editor.setTextWidth(max(40.0, float(width)))
         editor.setPos(scene_pos)
@@ -407,13 +461,14 @@ class InlineFreeTextEditorManager:
         self.graphics_max_height = max_height
         editor.document().contentsChanged.connect(lambda: self.resize_graphics_editor(max_height))
         self.resize_graphics_editor(max_height)
-        editor.setFocus()
         cursor = editor.textCursor()
         if select_all:
             cursor.select(QTextCursor.SelectionType.Document)
         else:
             cursor.movePosition(QTextCursor.MoveOperation.End)
         editor.setTextCursor(cursor)
+        self.scene.setFocusItem(editor, Qt.FocusReason.MouseFocusReason)
+        editor.setFocus(Qt.FocusReason.MouseFocusReason)
 
     def resize_graphics_editor(self, max_height: float | None = None) -> None:
         if self.graphics_editor is None or self.graphics_border is None:
@@ -475,7 +530,7 @@ class InlineFreeTextEditorManager:
         self.accept(self.editor.toPlainText())
 
     def cancel(self) -> None:
-        if self.proxy is None and self.editor is None:
+        if self.proxy is None and self.editor is None and self.graphics_editor is None:
             return
         self.clear()
         if self.canceled_callback is not None:

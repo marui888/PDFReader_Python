@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QApplication, QGraphicsItem, QGraphicsRectItem, QI
 from app.main_window import dialogs as main_window_dialogs
 from app.canvas.annotation_interaction import AnnotationInteractionController
 from app.canvas.annotation_selection import AnnotationSelectionRenderer
-from app.anchors import is_anchor_text, references_in_text
+from app.anchors import is_anchor_text, references_in_text, text_affects_anchor_data
 from app.models.annotation_model import ANNOTATION_COLORS, QUICK_HIGHLIGHT_COLORS, AnnotationModel
 from app.services.pdf_annotation_writer import PdfAnnotationWriter
 from app.services.pdf_text_extract import highlight_selected_text, selected_text_from_rects
@@ -894,6 +894,9 @@ class AnnotationController:
                     window.use_foxit_freetext,
                 )
                 window.mark_dirty()
+                if text_affects_anchor_data("", text.strip()):
+                    window.mark_navigation_anchors_dirty()
+                window.update_freetext_snapshot_text(page_index, annot.xref, text.strip())
                 self.record_add_undo("Add FreeText", page_index, annot.xref)
                 self.refresh_continuous_page_after_geometry_edit(page_index, annot.xref)
             self.set_active_tool("freetext")
@@ -1477,6 +1480,18 @@ class AnnotationController:
         window.show_annotation_properties()
         return True
 
+    def on_annotation_tool_blank_right_double_click(self, scene_pos) -> bool:
+        window = self.window
+        if scene_pos is None or window.active_tool not in {"freetext", "square", "highlight", "arrow"}:
+            return False
+        if window.is_inline_freetext_editor_hit(scene_pos):
+            return False
+        if self.annotation_hit_at_scene_pos(scene_pos) is not None:
+            return False
+        self.cancel_add_tool()
+        self.show_page_status()
+        return True
+
     def begin_single_freetext_creation_at_scene_pos(self, scene_pos) -> bool:
         window = self.window
         if window.doc is None:
@@ -1948,6 +1963,9 @@ class AnnotationController:
             window.use_foxit_freetext,
         )
         window.mark_dirty()
+        if text_affects_anchor_data("", text):
+            window.mark_navigation_anchors_dirty()
+        window.update_freetext_snapshot_text(window.page_index, annot.xref, text)
         self.refresh_overlay_and_select_annotation_by_xref(annot.xref, center_on=False)
         return annot.xref
 
@@ -2110,6 +2128,10 @@ class AnnotationController:
 
             self.record_delete_undo(model)
             PdfAnnotationWriter(window.doc).delete_annotation(page, model.xref)
+            if model.app_type == "freetext":
+                if text_affects_anchor_data(model.text, ""):
+                    window.mark_navigation_anchors_dirty()
+                window.remove_freetext_snapshot_record(page_index, model.xref)
             window.mark_dirty()
             window.selected_annotation_id = None
             self.refresh_after_delete(page_index)
@@ -2163,6 +2185,9 @@ class AnnotationController:
             color,
             window.estimated_freetext_size,
         )
+        if text_affects_anchor_data(model.text, text):
+            window.mark_navigation_anchors_dirty()
+        window.update_freetext_snapshot_text(page_index, model.xref, text)
 
     def update_freetext_annotation_clean_appearance_on_page(
         self,
@@ -2183,6 +2208,9 @@ class AnnotationController:
             color,
             window.estimated_freetext_size,
         )
+        if text_affects_anchor_data(model.text, text):
+            window.mark_navigation_anchors_dirty()
+        window.update_freetext_snapshot_text(page_index, model.xref, text)
 
     def update_freetext_annotation_clean_appearance_in_rect_on_page(
         self,
@@ -2204,6 +2232,9 @@ class AnnotationController:
             font_size,
             color,
         )
+        if text_affects_anchor_data(model.text, text):
+            window.mark_navigation_anchors_dirty()
+        window.update_freetext_snapshot_text(page_index, model.xref, text)
 
     def normalize_freetext_annotation(
         self, annot: fitz.Annot, font_size: int, color: tuple[float, float, float]
@@ -2437,6 +2468,7 @@ class AnnotationController:
                 references_menu = menu.addMenu("Go to Ref")
                 for reference in references:
                     reference_actions[references_menu.addAction(reference)] = reference
+            auto_fit_action = menu.addAction("Auto Fit")
             self.add_context_freetext_font_size_menu(menu, model, property_actions)
             if is_anchor_text(model.text):
                 serial_action = menu.addAction("Remove Serial Number")
@@ -2444,6 +2476,7 @@ class AnnotationController:
                 serial_action = menu.addAction("Add Serial Number")
         else:
             serial_action = None
+            auto_fit_action = None
         if model.app_type in {"square", "arrow"}:
             self.add_context_color_menu(menu, ANNOTATION_COLORS, property_actions)
             self.add_context_line_width_menu(menu, model, property_actions)
@@ -2458,6 +2491,9 @@ class AnnotationController:
             return
         if selected_action in property_actions:
             property_actions[selected_action]()
+            return
+        if auto_fit_action is not None and selected_action == auto_fit_action:
+            self.auto_fit_selected_freetext()
             return
         if serial_action is not None and selected_action == serial_action:
             if model.app_type == "freetext" and is_anchor_text(model.text):
@@ -2519,6 +2555,32 @@ class AnnotationController:
             return
         self.record_property_undo("Edit FreeText Font Size", model)
         self.on_freetext_property_change(model.text, font_size, model.color or (1, 0, 0))
+
+    def auto_fit_selected_freetext(self) -> None:
+        window = self.window
+        model = window.annotation_model_map.get(window.selected_annotation_id) if window.selected_annotation_id else None
+        if window.doc is None or model is None or model.app_type != "freetext":
+            return
+        try:
+            self.record_geometry_undo("Auto Fit FreeText", model)
+            page = window.doc[model.page_index if getattr(window, "view_mode", "single") == "continuous" else window.page_index]
+            PdfAnnotationWriter(window.doc).auto_fit_freetext_annotation(
+                page,
+                model,
+                window.default_freetext_font_size,
+            )
+            window.mark_dirty()
+            if getattr(window, "view_mode", "single") == "continuous":
+                self.refresh_continuous_page_after_geometry_edit(model.page_index, model.xref)
+            else:
+                window.refresh_annotation_overlay(preserve_selection=True)
+            window.statusBar().showMessage(f"Auto fit FreeText xref={model.xref}. Use Save to persist.")
+        except Exception as exc:
+            if getattr(window, "view_mode", "single") == "continuous" and model is not None:
+                self.refresh_continuous_page_after_geometry_edit(model.page_index, model.xref)
+            else:
+                window.refresh_annotation_overlay(preserve_selection=True)
+            window.show_error("Auto fit FreeText failed", exc)
 
     def find_page_annotation_by_xref(self, page: fitz.Page, xref: int) -> fitz.Annot | None:
         window = self.window
