@@ -48,6 +48,15 @@ from app.services.page_labels import parse_page_labels_json
 from app.services.settings import AppSettings, load_settings, save_settings, settings_path
 from app.services.shortcuts import apply_shortcuts as apply_window_shortcuts
 from app.services.text_match import InvalidRegexError
+from app.services.ui_contrast import (
+    annotation_table_contrast_stylesheet,
+    application_contrast_stylesheet,
+    clamp_contrast,
+    document_tabbar_contrast_stylesheet,
+    menu_contrast_stylesheet,
+    tabbar_contrast_stylesheet,
+    toolbar_contrast_stylesheet,
+)
 from app.widgets.page_labels_dialog import PageLabelsDialog
 from app.widgets.freetext_batch import BatchReplacePreviewDialog
 from app.models.undo import UndoAction
@@ -61,6 +70,7 @@ from PySide6.QtWidgets import (
     QGraphicsItem,
     QGraphicsPixmapItem,
     QMainWindow,
+    QMenu,
     QPlainTextEdit,
     QTabBar,
     QTabWidget,
@@ -92,6 +102,8 @@ class MainWindow(QMainWindow):
         self.save_incremental_safety_default = True
         self.anchor_page_basis = "physical"
         self.search_page_size = 500
+        self.page_jump_step = 5
+        self.ui_contrast = 35
         self.keyword_groups = load_keyword_groups(self.keyword_metadata_dir())
         self.recent_files: list[dict] = []
         self.recent_search_rule_files: list[str] = []
@@ -167,7 +179,7 @@ class MainWindow(QMainWindow):
         self.hidden_inline_freetext_annotation_id: str | None = None
         self.text_lines_cache_page_index: int | None = None
         self.text_lines_cache: list[list[dict]] | None = None
-        self.view_mode = "single"
+        self.view_mode = "continuous"
         self.continuous_page_gap = 20.0
         self.continuous_cache_radius = 2
         self.continuous_page_layouts: list[PageLayout] = []
@@ -182,6 +194,10 @@ class MainWindow(QMainWindow):
         self.continuous_scroll_timer.setSingleShot(True)
         self.continuous_scroll_timer.setInterval(40)
         self.continuous_scroll_timer.timeout.connect(self.on_continuous_scroll_timer)
+        self.ui_contrast_save_timer = QTimer(self)
+        self.ui_contrast_save_timer.setSingleShot(True)
+        self.ui_contrast_save_timer.setInterval(600)
+        self.ui_contrast_save_timer.timeout.connect(self.save_app_settings)
 
         self.scene = AnnotationScene(self)
         self.scene.selectionChanged.connect(self.on_scene_selection_changed)
@@ -204,27 +220,7 @@ class MainWindow(QMainWindow):
         self.document_tabs.setMovable(False)
         self.document_tabs.setIconSize(QSize(8, 8))
         self.document_tabs.setVisible(False)
-        self.document_tabs.setStyleSheet(
-            """
-            QTabBar::tab {
-                background: #e7e7e7;
-                border: 1px solid #b8b8b8;
-                border-bottom-color: #8f8f8f;
-                padding: 2px 6px;
-                margin-right: 1px;
-                min-height: 18px;
-            }
-            QTabBar::tab:selected {
-                background: white;
-                border: 2px solid #4f7ecb;
-                border-bottom-color: white;
-                font-weight: 700;
-            }
-            QTabBar::tab:!selected {
-                color: #444;
-            }
-            """
-        )
+        self.document_tabs.setStyleSheet(document_tabbar_contrast_stylesheet(self.ui_contrast))
         self.document_tabs.currentChanged.connect(self.on_document_tab_changed)
         self.document_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.document_tabs.customContextMenuRequested.connect(self.show_document_tab_context_menu)
@@ -245,6 +241,7 @@ class MainWindow(QMainWindow):
         self.create_menus()
         self.create_toolbar()
         self.apply_shortcuts()
+        self.apply_ui_contrast()
         self.show_current_page_annotations()
         self.update_actions()
 
@@ -727,6 +724,8 @@ class MainWindow(QMainWindow):
         self.save_incremental_safety_default = settings.save_incremental_safety_default
         self.anchor_page_basis = settings.anchor_page_basis
         self.search_page_size = settings.search_page_size
+        self.page_jump_step = settings.page_jump_step
+        self.ui_contrast = settings.ui_contrast
         self.recent_files = settings.recent_files
         self.recent_search_rule_files = settings.recent_search_rule_files
         self.shortcuts = settings.shortcuts
@@ -747,6 +746,8 @@ class MainWindow(QMainWindow):
             save_incremental_safety_default=self.save_incremental_safety_default,
             anchor_page_basis=self.anchor_page_basis,
             search_page_size=self.search_page_size,
+            page_jump_step=self.page_jump_step,
+            ui_contrast=self.ui_contrast,
             recent_files=self.recent_files,
             recent_search_rule_files=self.recent_search_rule_files,
             shortcuts=self.shortcuts,
@@ -755,6 +756,58 @@ class MainWindow(QMainWindow):
 
     def apply_shortcuts(self) -> None:
         apply_window_shortcuts(self)
+
+    def apply_ui_contrast(self) -> None:
+        stylesheet = application_contrast_stylesheet(self.ui_contrast)
+        menu_stylesheet = menu_contrast_stylesheet(self.ui_contrast)
+        tab_stylesheet = tabbar_contrast_stylesheet(self.ui_contrast)
+        toolbar_stylesheet = toolbar_contrast_stylesheet(self.ui_contrast)
+        app = QApplication.instance()
+        if app is not None:
+            app.setStyleSheet(stylesheet)
+        self.setStyleSheet(stylesheet)
+        if hasattr(self, "menuBar"):
+            self.menuBar().setStyleSheet(menu_stylesheet)
+            for menu in self.menuBar().findChildren(QMenu):
+                menu.setStyleSheet(menu_stylesheet)
+        for menu in getattr(self, "contrast_menus", []):
+            menu.setStyleSheet(menu_stylesheet)
+        if hasattr(self, "document_tabs"):
+            self.document_tabs.setStyleSheet(document_tabbar_contrast_stylesheet(self.ui_contrast))
+        if getattr(self, "main_toolbar", None) is not None:
+            self.main_toolbar.setStyleSheet(toolbar_stylesheet)
+        if getattr(self, "annotations_tabs", None) is not None:
+            self.annotations_tabs.setStyleSheet(tab_stylesheet)
+            self.annotations_tabs.tabBar().setStyleSheet(tab_stylesheet)
+        if getattr(self, "navigation_widget", None) is not None:
+            if hasattr(self.navigation_widget, "apply_ui_contrast"):
+                self.navigation_widget.apply_ui_contrast(self.ui_contrast)
+            else:
+                self.navigation_widget.setStyleSheet(tab_stylesheet)
+        if getattr(self, "annotations_table", None) is not None:
+            if hasattr(self.annotations_table, "apply_ui_contrast"):
+                self.annotations_table.apply_ui_contrast(self.ui_contrast)
+            else:
+                self.annotations_table.setStyleSheet(annotation_table_contrast_stylesheet(self.ui_contrast))
+        if getattr(self, "annotation_search_widget", None) is not None and hasattr(
+            self.annotation_search_widget,
+            "apply_ui_contrast",
+        ):
+            self.annotation_search_widget.apply_ui_contrast(self.ui_contrast)
+        if getattr(self, "batch_freetext_widget", None) is not None and hasattr(
+            self.batch_freetext_widget,
+            "apply_ui_contrast",
+        ):
+            self.batch_freetext_widget.apply_ui_contrast(self.ui_contrast)
+
+    def set_ui_contrast(self, value: int) -> None:
+        contrast = clamp_contrast(value)
+        if contrast == self.ui_contrast:
+            return
+        self.ui_contrast = contrast
+        self.apply_ui_contrast()
+        if hasattr(self, "ui_contrast_save_timer"):
+            self.ui_contrast_save_timer.start()
 
     def update_recent_search_rule_files(self, recent_files: list[str]) -> None:
         self.recent_search_rule_files = list(recent_files)[: self.max_recent_files]
@@ -2683,6 +2736,28 @@ class MainWindow(QMainWindow):
         self.update_current_recent_page()
         self.save_active_session_state()
 
+    def jump_pages(self, delta: int) -> None:
+        if self.doc is None or delta == 0:
+            return
+        target_index = max(0, min(len(self.doc) - 1, self.page_index + int(delta)))
+        if target_index == self.page_index:
+            return
+        self.record_view_location_before_navigation()
+        self.cancel_add_tool()
+        self.page_index = target_index
+        if self.view_mode == "continuous":
+            self.scroll_continuous_to_page(self.page_index)
+            self.update_current_recent_page()
+            self.save_active_session_state()
+            return
+        self.render_page()
+        if delta < 0:
+            self.defer_scroll_to_page_bottom_left()
+        else:
+            self.defer_scroll_to_page_top_left()
+        self.update_current_recent_page()
+        self.save_active_session_state()
+
     def zoom_in(self) -> None:
         self.zoom = min(self.zoom + 0.25, 4.0)
         self.render_page(preserve_selection=True)
@@ -2727,6 +2802,9 @@ class MainWindow(QMainWindow):
             self.log_debug("Exit canceled by unsaved changes prompt")
             event.ignore()
             return
+        if getattr(self, "ui_contrast_save_timer", None) is not None and self.ui_contrast_save_timer.isActive():
+            self.ui_contrast_save_timer.stop()
+            self.save_app_settings()
         self.stop_continuous_scroll_timer()
         self.cancel_add_tool()
         self.update_current_recent_page()

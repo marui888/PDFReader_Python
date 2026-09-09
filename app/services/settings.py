@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from app.services.shortcuts import merged_shortcuts
+from app.services.ui_contrast import clamp_contrast
 
 
 @dataclass
@@ -21,6 +22,8 @@ class AppSettings:
     save_incremental_safety_default: bool = True
     anchor_page_basis: str = "physical"
     search_page_size: int = 500
+    page_jump_step: int = 5
+    ui_contrast: int = 35
     recent_files: list[dict] = field(default_factory=list)
     recent_search_rule_files: list[str] = field(default_factory=list)
     shortcuts: dict[str, str] = field(default_factory=lambda: merged_shortcuts({}))
@@ -87,6 +90,8 @@ def load_settings(path: Path, max_recent_files: int = 10) -> AppSettings:
         opacity = float(data.get("default_highlight_opacity", settings.default_highlight_opacity))
         settings.default_highlight_opacity = max(0.05, min(1.0, opacity))
         settings.search_page_size = max(1, min(10000, int(data.get("search_page_size", settings.search_page_size))))
+        settings.page_jump_step = max(1, min(100, int(data.get("page_jump_step", settings.page_jump_step))))
+        settings.ui_contrast = clamp_contrast(int(data.get("ui_contrast", settings.ui_contrast)))
     except (TypeError, ValueError):
         pass
 
@@ -108,6 +113,8 @@ def save_settings(path: Path, settings: AppSettings) -> None:
         "save_incremental_safety_default": settings.save_incremental_safety_default,
         "anchor_page_basis": settings.anchor_page_basis,
         "search_page_size": settings.search_page_size,
+        "page_jump_step": settings.page_jump_step,
+        "ui_contrast": settings.ui_contrast,
         "shortcuts": dict(settings.shortcuts),
         "use_foxit_freetext": settings.use_foxit_freetext,
         "use_graphics_freetext_editor": settings.use_graphics_freetext_editor,

@@ -56,7 +56,7 @@ class SearchController:
         window.search_annotations_action.setEnabled(not busy)
         window.open_action.setEnabled(not busy)
         window.close_action.setEnabled(not busy and window.doc is not None)
-        window.save_action.setEnabled(not busy and window.doc is not None)
+        window.save_action.setEnabled(False)
         window.save_as_action.setEnabled(not busy and window.doc is not None)
         window.save_incremental_action.setEnabled(not busy and window.doc is not None)
         if window.annotation_search_widget is not None:

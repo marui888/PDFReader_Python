@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
+    QComboBox,
+    QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
     QDialog,
     QDialogButtonBox,
@@ -21,6 +26,7 @@ from PySide6.QtWidgets import (
 
 from app.anchors import AnchorModel, AnchorReferenceModel
 from app.services.icons import dirty_dot_icon
+from app.services.ui_contrast import table_contrast_stylesheet, tabbar_contrast_stylesheet
 
 
 class BookmarksWidget(QWidget):
@@ -95,6 +101,7 @@ class AnchorsWidget(QWidget):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.anchors: list[AnchorModel] = []
+        self.display_anchors: list[AnchorModel] = []
         self.copy_button = QPushButton("Copy Ref")
         self.insert_button = QPushButton("Insert Ref")
         self.references_button = QPushButton("Show Refs")
@@ -112,21 +119,31 @@ class AnchorsWidget(QWidget):
             """
         )
         self.anchor_count_label = QLabel("Anchors: 0")
+        self.sort_combo = QComboBox()
+        self.sort_combo.addItem("Page", "page")
+        self.sort_combo.addItem("Created", "created")
+        self.sort_combo.addItem("Modified", "modified")
+        self.order_combo = QComboBox()
+        self.order_combo.addItem("Asc", "asc")
+        self.order_combo.addItem("Desc", "desc")
         self.empty_label = QLabel("No anchors")
         self.empty_label.setVisible(False)
         self.references_by_anchor: dict[str, list[AnchorReferenceModel]] = {}
-        self.table = QTableWidget(0, 5)
-        self.table.setHorizontalHeaderLabels(("Ref", "Text", "Refs", "Page", "xref"))
+        self.table = QTableWidget(0, 7)
+        self.table.setHorizontalHeaderLabels(("Ref", "Text", "Refs", "Page", "xref", "Created", "Modified"))
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
+        self.set_fixed_numeric_column_widths()
 
-        buttons = QHBoxLayout()
-        buttons.addWidget(self.copy_button)
-        buttons.addWidget(self.insert_button)
-        buttons.addWidget(self.references_button)
-        buttons.addWidget(self.refresh_button)
-        buttons.addStretch(1)
+        buttons = QGridLayout()
+        buttons.addWidget(self.copy_button, 0, 0)
+        buttons.addWidget(self.insert_button, 0, 1)
+        buttons.addWidget(self.references_button, 1, 0)
+        buttons.addWidget(self.refresh_button, 1, 1)
+        buttons.setColumnStretch(2, 1)
 
         summary = QHBoxLayout()
         summary.addWidget(self.page_basis_title_label)
@@ -134,11 +151,19 @@ class AnchorsWidget(QWidget):
         summary.addWidget(self.anchor_count_label)
         summary.addStretch(1)
 
+        sort_controls = QHBoxLayout()
+        sort_controls.addWidget(QLabel("Sort:"))
+        sort_controls.addWidget(self.sort_combo)
+        sort_controls.addWidget(QLabel("Order:"))
+        sort_controls.addWidget(self.order_combo)
+        sort_controls.addStretch(1)
+
         top_panel = QWidget()
         top_layout = QVBoxLayout(top_panel)
         top_layout.setContentsMargins(0, 0, 0, 0)
         top_layout.setSpacing(4)
         top_layout.addLayout(summary)
+        top_layout.addLayout(sort_controls)
         top_layout.addLayout(buttons)
 
         list_panel = QWidget()
@@ -158,9 +183,15 @@ class AnchorsWidget(QWidget):
         self.insert_button.clicked.connect(self.insert_selected_reference)
         self.references_button.clicked.connect(self.show_selected_references)
         self.refresh_button.clicked.connect(self.refresh_requested.emit)
+        self.sort_combo.currentIndexChanged.connect(self.refresh_table)
+        self.order_combo.currentIndexChanged.connect(self.refresh_table)
         self.table.itemDoubleClicked.connect(lambda _item: self.activate_selected_anchor())
         self.table.itemSelectionChanged.connect(self.update_buttons)
         self.set_insert_enabled(False)
+        self.apply_ui_contrast(35)
+
+    def apply_ui_contrast(self, contrast: int) -> None:
+        self.table.setStyleSheet(table_contrast_stylesheet(contrast))
 
     def set_anchors(
         self,
@@ -168,7 +199,14 @@ class AnchorsWidget(QWidget):
         references_by_anchor: dict[str, list[AnchorReferenceModel]] | None = None,
     ) -> None:
         self.anchors = anchors
+        self.display_anchors = []
         self.references_by_anchor = references_by_anchor or {}
+        self.refresh_table()
+
+    def refresh_table(self) -> None:
+        selected_reference = self.selected_anchor().reference if self.selected_anchor() is not None else None
+        anchors = self.sorted_anchors()
+        self.display_anchors = anchors
         self.table.setRowCount(0)
         self.table.setRowCount(len(anchors))
         for row, anchor in enumerate(anchors):
@@ -178,15 +216,62 @@ class AnchorsWidget(QWidget):
                 str(len(self.references_by_anchor.get(anchor.reference, []))),
                 str(anchor.page_number),
                 str(anchor.xref),
+                self.format_pdf_date(anchor.creation_date),
+                self.format_pdf_date(anchor.modified_date),
             )
             for column, value in enumerate(values):
                 item = QTableWidgetItem(value)
                 item.setToolTip(anchor.text)
                 self.table.setItem(row, column, item)
+            if selected_reference == anchor.reference:
+                self.table.selectRow(row)
         self.empty_label.setVisible(not anchors)
         self.table.setVisible(bool(anchors))
         self.anchor_count_label.setText(f"Anchors: {len(anchors)}")
         self.update_buttons()
+
+    def sorted_anchors(self) -> list[AnchorModel]:
+        sort_key = self.sort_combo.currentData()
+        reverse = self.order_combo.currentData() == "desc"
+
+        def sort_by_date(field_name: str) -> list[AnchorModel]:
+            with_date = [anchor for anchor in self.anchors if getattr(anchor, field_name)]
+            without_date = [anchor for anchor in self.anchors if not getattr(anchor, field_name)]
+            with_date.sort(
+                key=lambda anchor: (getattr(anchor, field_name), anchor.page_index, anchor.xref),
+                reverse=reverse,
+            )
+            without_date.sort(key=lambda anchor: (anchor.page_index, anchor.xref))
+            return with_date + without_date
+
+        if sort_key == "created":
+            return sort_by_date("creation_date")
+        if sort_key == "modified":
+            return sort_by_date("modified_date")
+        return sorted(self.anchors, key=lambda anchor: (anchor.page_index, anchor.xref), reverse=reverse)
+
+    def set_fixed_numeric_column_widths(self) -> None:
+        metrics = self.table.fontMetrics()
+        numeric_columns = (
+            (2, "000"),
+            (3, "0000"),
+            (4, "00000"),
+        )
+        header = self.table.horizontalHeader()
+        for column, sample in numeric_columns:
+            width = metrics.horizontalAdvance(sample) + 24
+            self.table.setColumnWidth(column, width)
+            header.setSectionResizeMode(column, QHeaderView.ResizeMode.Fixed)
+
+    @staticmethod
+    def format_pdf_date(value: str | None) -> str:
+        if not value:
+            return ""
+        match = re.match(r"^D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})", value)
+        if not match:
+            return value
+        year, month, day, hour, minute, second = match.groups()
+        return f"{year}-{month}-{day} {hour}:{minute}:{second}"
 
     def clear(self) -> None:
         self.set_anchors([])
@@ -197,9 +282,9 @@ class AnchorsWidget(QWidget):
 
     def selected_anchor(self) -> AnchorModel | None:
         row = self.table.currentRow()
-        if row < 0 or row >= len(self.anchors):
+        if row < 0 or row >= len(self.display_anchors):
             return None
-        return self.anchors[row]
+        return self.display_anchors[row]
 
     def activate_selected_anchor(self) -> None:
         anchor = self.selected_anchor()
@@ -265,6 +350,13 @@ class NavigationWidget(QTabWidget):
         self.anchors_widget.anchor_insert_requested.connect(self.anchor_insert_requested.emit)
         self.anchors_widget.reference_source_activated.connect(self.reference_source_activated.emit)
         self.anchors_widget.refresh_requested.connect(self.anchors_refresh_requested.emit)
+        self.apply_ui_contrast(35)
+
+    def apply_ui_contrast(self, contrast: int) -> None:
+        stylesheet = tabbar_contrast_stylesheet(contrast)
+        self.setStyleSheet(stylesheet)
+        self.tabBar().setStyleSheet(stylesheet)
+        self.anchors_widget.apply_ui_contrast(contrast)
 
     def set_bookmarks(self, toc: list[list]) -> None:
         self.bookmarks_widget.set_toc(toc)
@@ -310,6 +402,9 @@ class ReferencesDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
+        self.table.setStyleSheet(table_contrast_stylesheet(35))
         layout.addWidget(self.table)
 
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)

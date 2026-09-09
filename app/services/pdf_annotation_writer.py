@@ -22,6 +22,26 @@ class PdfAnnotationWriter:
             pdf_offset = f"{offset[:3]}'{offset[3:]}'"
         return now.strftime("D:%Y%m%d%H%M%S") + pdf_offset
 
+    def set_pdf_date_key(self, xref: int, key: str, value: str) -> None:
+        self.doc.xref_set_key(xref, key, fitz.get_pdf_str(value))
+
+    def set_creation_date_if_missing(self, annot: fitz.Annot, value: str | None = None) -> None:
+        xref = annot.xref
+        try:
+            key_type, key_value = self.doc.xref_get_key(xref, "CreationDate")
+        except Exception:
+            key_type, key_value = "null", ""
+        if key_type == "null" or not key_value:
+            self.set_pdf_date_key(xref, "CreationDate", value or self.pdf_date_now())
+
+    def touch_mod_date(self, annot: fitz.Annot, value: str | None = None) -> None:
+        self.set_pdf_date_key(annot.xref, "M", value or self.pdf_date_now())
+
+    def initialize_annotation_dates(self, annot: fitz.Annot) -> None:
+        now = self.pdf_date_now()
+        self.set_creation_date_if_missing(annot, now)
+        self.touch_mod_date(annot, now)
+
     def apply_foxit_freetext_keys(self, annot: fitz.Annot) -> None:
         xref = annot.xref
         self.doc.xref_set_key(xref, "IT", "/FreeTextTypewriter")
@@ -77,6 +97,7 @@ class PdfAnnotationWriter:
         )
         annot.set_info(title="PDF Note Reader", content=text)
         annot.update()
+        self.initialize_annotation_dates(annot)
         if use_foxit_freetext:
             self.apply_foxit_freetext_keys(annot)
         return annot
@@ -94,6 +115,7 @@ class PdfAnnotationWriter:
         annot.set_border(width=border_width)
         annot.set_info(title="PDF Note Reader", content=text)
         annot.update()
+        self.initialize_annotation_dates(annot)
         return annot
 
     def add_arrow_annotation(
@@ -111,6 +133,7 @@ class PdfAnnotationWriter:
         annot.set_border(width=border_width)
         annot.set_info(title="PDF Note Reader", content=text)
         annot.update()
+        self.initialize_annotation_dates(annot)
         return annot
 
     def add_highlight_annotation(
@@ -125,6 +148,7 @@ class PdfAnnotationWriter:
         annot.set_colors(stroke=color)
         annot.set_info(title="PDF Note Reader", content=text)
         annot.update(opacity=opacity)
+        self.initialize_annotation_dates(annot)
         return annot
 
     def delete_annotation(self, page: fitz.Page, xref: int) -> None:
@@ -262,6 +286,7 @@ class PdfAnnotationWriter:
         else:
             annot.set_rect(fitz.Rect(rect.x0 + inset, rect.y0 + inset, rect.x1 - inset, rect.y1 - inset))
         annot.update()
+        self.touch_mod_date(annot)
 
     def set_freetext_rect(
         self,
@@ -277,6 +302,7 @@ class PdfAnnotationWriter:
             int(model.font_size or default_freetext_font_size),
             model.color or (1, 0, 0),
         )
+        self.touch_mod_date(annot)
 
     def set_line_annotation_points(
         self,
@@ -299,6 +325,7 @@ class PdfAnnotationWriter:
         self.doc.xref_set_key(annot.xref, "Rect", raw_rect)
         self.doc.xref_set_key(annot.xref, "L", raw)
         annot.update()
+        self.touch_mod_date(annot)
 
     def move_annotation(self, page: fitz.Page, model: AnnotationModel, dx: float, dy: float) -> None:
         annot = self.find_page_annotation_by_xref(page, model.xref)
@@ -314,6 +341,7 @@ class PdfAnnotationWriter:
             )
             annot.set_rect(new_rect)
             annot.update()
+            self.touch_mod_date(annot)
             return
 
         if model.app_type == "square":
@@ -389,6 +417,7 @@ class PdfAnnotationWriter:
         annot.set_border(width=0)
         annot.update(fontsize=font_size, fontname="helv", text_color=color, fill_color=None, border_color=None)
         self.normalize_freetext_annotation(annot, font_size, color)
+        self.touch_mod_date(annot)
 
     def update_freetext_annotation_clean_appearance(
         self,
@@ -409,6 +438,7 @@ class PdfAnnotationWriter:
         annot.set_info(title="PDF Note Reader", content=text)
         annot.set_border(width=0)
         self.normalize_freetext_annotation_clean_appearance(annot, font_size, color)
+        self.touch_mod_date(annot)
 
     def update_freetext_annotation_clean_appearance_in_rect(
         self,
@@ -435,6 +465,7 @@ class PdfAnnotationWriter:
         annot.set_info(title="PDF Note Reader", content=text)
         annot.set_border(width=0)
         self.normalize_freetext_annotation_clean_appearance(annot, font_size, color)
+        self.touch_mod_date(annot)
 
     def freetext_rect_from_left_center(
         self,
@@ -507,6 +538,7 @@ class PdfAnnotationWriter:
 
         annot.set_colors(stroke=color)
         annot.update(opacity=max(0.05, min(1.0, opacity)))
+        self.touch_mod_date(annot)
 
     def update_stroked_annotation(
         self, page: fitz.Page, model: AnnotationModel, color: tuple[float, float, float], width: int
@@ -518,3 +550,4 @@ class PdfAnnotationWriter:
         annot.set_colors(stroke=color)
         annot.set_border(width=width)
         annot.update()
+        self.touch_mod_date(annot)

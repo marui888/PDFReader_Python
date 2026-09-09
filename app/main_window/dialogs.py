@@ -194,6 +194,11 @@ def open_settings(window) -> None:
     search_page_size_spin.setValue(window.search_page_size)
     form.addRow("Search page size", search_page_size_spin)
 
+    page_jump_step_spin = QSpinBox()
+    page_jump_step_spin.setRange(1, 100)
+    page_jump_step_spin.setValue(window.page_jump_step)
+    form.addRow("Page jump step", page_jump_step_spin)
+
     anchor_page_basis_combo = QComboBox()
     anchor_page_basis_combo.addItem("Physical page", "physical")
     anchor_page_basis_combo.addItem("Book page", "book")
@@ -310,6 +315,7 @@ def open_settings(window) -> None:
         window.freetext_font_size_max = max(window.freetext_font_size_min, font_max_spin.value())
         window.default_freetext_font_size = window.clamp_freetext_font_size(font_size_spin.value())
         window.search_page_size = max(1, search_page_size_spin.value())
+        window.page_jump_step = max(1, page_jump_step_spin.value())
         old_anchor_page_basis = window.anchor_page_basis
         window.anchor_page_basis = anchor_page_basis_combo.currentData()
         if window.anchor_page_basis != old_anchor_page_basis:

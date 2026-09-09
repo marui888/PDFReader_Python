@@ -25,6 +25,8 @@ class AnchorModel:
     xref: int
     text: str
     rect: fitz.Rect
+    creation_date: str | None = None
+    modified_date: str | None = None
 
 
 @dataclass
@@ -163,6 +165,8 @@ def find_anchor_on_page(
             xref=model.xref,
             text=model.text,
             rect=fitz.Rect(model.rect),
+            creation_date=model.creation_date,
+            modified_date=model.modified_date,
         )
     return None
 
@@ -267,6 +271,8 @@ def scan_document_anchor_data(doc: fitz.Document, page_basis: str = "physical") 
                         xref=model.xref,
                         text=model.text,
                         rect=fitz.Rect(model.rect),
+                        creation_date=model.creation_date,
+                        modified_date=model.modified_date,
                     )
                 )
             for reference in references_in_text(model.text):

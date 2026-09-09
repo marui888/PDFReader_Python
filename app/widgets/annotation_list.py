@@ -4,6 +4,7 @@ from PySide6.QtGui import QColor
 from PySide6.QtWidgets import QAbstractItemView, QTableWidget, QTableWidgetItem
 
 from app.models.annotation_model import AnnotationModel
+from app.services.ui_contrast import annotation_table_contrast_stylesheet
 
 
 class AnnotationListWidget(QTableWidget):
@@ -19,9 +20,12 @@ class AnnotationListWidget(QTableWidget):
         self.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.setStyleSheet(
-            "QTableWidget::item:selected { background-color: rgb(242, 242, 242); color: black; }"
-        )
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self.apply_ui_contrast(35)
+
+    def apply_ui_contrast(self, contrast: int) -> None:
+        self.setStyleSheet(annotation_table_contrast_stylesheet(contrast))
 
     def set_annotations(self, annotations: list[AnnotationModel]) -> None:
         self.setRowCount(len(annotations))

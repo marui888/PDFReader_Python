@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QLabel, QLineEdit, QMenu, QSpinBox, QToolBar, QToolButton
+from PySide6.QtWidgets import QLabel, QLineEdit, QMenu, QSpinBox, QToolBar, QToolButton, QWidget
 
 from app.models.annotation_model import QUICK_HIGHLIGHT_COLORS
 
@@ -65,6 +65,7 @@ def create_actions(window) -> None:
     window.close_action.triggered.connect(window.close_pdf)
 
     window.save_action = QAction("Save", window)
+    window.save_action.setEnabled(False)
     window.save_action.triggered.connect(lambda checked=False: window.save())
 
     window.save_incremental_action = QAction("Save Incremental", window)
@@ -98,6 +99,20 @@ def create_actions(window) -> None:
 
     window.next_action = QAction("Next", window)
     window.next_action.triggered.connect(window.next_page)
+
+    window.first_page_action = QAction("First Page", window)
+    window.first_page_action.setShortcut("Ctrl+Home")
+    window.first_page_action.triggered.connect(
+        lambda checked=False: window.go_to_page(1) if window.doc is not None else None
+    )
+    window.addAction(window.first_page_action)
+
+    window.last_page_action = QAction("Last Page", window)
+    window.last_page_action.setShortcut("Ctrl+End")
+    window.last_page_action.triggered.connect(
+        lambda checked=False: window.go_to_page(len(window.doc)) if window.doc is not None else None
+    )
+    window.addAction(window.last_page_action)
 
     window.view_back_action = QAction("Back", window)
     window.view_back_action.triggered.connect(window.go_back_view)
@@ -161,6 +176,13 @@ def create_actions(window) -> None:
     window.quick_highlight_opacity_spin.valueChanged.connect(
         lambda value: on_quick_highlight_opacity_changed(window, value)
     )
+    window.ui_contrast_spin = QSpinBox()
+    window.ui_contrast_spin.setRange(0, 100)
+    window.ui_contrast_spin.setValue(window.ui_contrast)
+    window.ui_contrast_spin.setFixedWidth(72)
+    window.ui_contrast_spin.setMinimumHeight(22)
+    window.ui_contrast_spin.setToolTip("UI hover/selected contrast 0-100")
+    window.ui_contrast_spin.valueChanged.connect(lambda value: window.set_ui_contrast(value))
     window.quick_highlight_color_buttons = []
     for name, color in QUICK_HIGHLIGHT_COLORS.items():
         button = QToolButton(window)
@@ -232,20 +254,22 @@ def create_actions(window) -> None:
 
 def create_menus(window) -> None:
     file_menu = window.menuBar().addMenu("File")
+    window.file_menu = file_menu
     file_menu.addAction(window.open_action)
     window.open_recent_menu = file_menu.addMenu("Open Recent")
     window.refresh_recent_files_menu()
     file_menu.addAction(window.close_action)
+    file_menu.addSeparator()
+    file_menu.addAction(window.save_incremental_action)
     file_menu.addAction(window.save_action)
     file_menu.addAction(window.save_as_action)
     file_menu.addSeparator()
     file_menu.addAction(window.settings_action)
     file_menu.addSeparator()
     file_menu.addAction(window.exit_action)
-    file_menu.addSeparator()
-    file_menu.addAction(window.save_incremental_action)
 
     edit_menu = window.menuBar().addMenu("Edit")
+    window.edit_menu = edit_menu
     edit_menu.addAction(window.undo_action_qt)
     edit_menu.addSeparator()
     edit_menu.addAction(window.edit_annotation_action)
@@ -254,9 +278,11 @@ def create_menus(window) -> None:
     edit_menu.addAction(window.page_labels_action)
 
     view_menu = window.menuBar().addMenu("View")
+    window.view_menu = view_menu
     view_menu.addAction(window.continuous_view_action)
 
     tools_menu = window.menuBar().addMenu("Tools")
+    window.tools_menu = tools_menu
     tools_menu.addAction(window.show_navigation_action)
     tools_menu.addSeparator()
     tools_menu.addAction(window.show_annotations_action)
@@ -277,16 +303,24 @@ def create_menus(window) -> None:
     tools_menu.addAction(window.audit_continuous_view_state_action)
     tools_menu.addAction(window.debug_selected_annotation_pdf_object_action)
     tools_menu.addAction(window.debug_log_action)
+    window.contrast_menus = [
+        file_menu,
+        window.open_recent_menu,
+        edit_menu,
+        view_menu,
+        tools_menu,
+    ]
 
 
 def create_toolbar(window) -> None:
     toolbar = QToolBar("Main")
+    toolbar.setObjectName("mainToolbar")
+    window.main_toolbar = toolbar
     toolbar.setMovable(False)
     toolbar.setContentsMargins(0, 0, 0, 0)
     if toolbar.layout() is not None:
         toolbar.layout().setContentsMargins(0, 0, 0, 0)
         toolbar.layout().setSpacing(1)
-    toolbar.setStyleSheet("QToolBar { spacing: 1px; padding: 0px; margin: 0px; }")
     window.addToolBar(toolbar)
 
     toolbar.addAction(window.view_back_action)
@@ -295,10 +329,13 @@ def create_toolbar(window) -> None:
 
     toolbar.addAction(window.prev_action)
     toolbar.addAction(window.next_action)
-    toolbar.addWidget(QLabel("Page"))
+    toolbar.addWidget(QLabel("PPage"))
     toolbar.addWidget(window.page_spin)
     toolbar.addWidget(window.page_count_label)
-    toolbar.addWidget(QLabel("Book"))
+    page_book_spacer = QWidget()
+    page_book_spacer.setFixedWidth(12)
+    toolbar.addWidget(page_book_spacer)
+    toolbar.addWidget(QLabel("BPage"))
     toolbar.addWidget(window.book_label_input)
 
     toolbar.addSeparator()
@@ -319,8 +356,10 @@ def create_toolbar(window) -> None:
     toolbar.addWidget(QLabel("HL"))
     for button, _color in window.quick_highlight_color_buttons:
         toolbar.addWidget(button)
-    toolbar.addWidget(QLabel("Op"))
+    toolbar.addWidget(QLabel("Opacity"))
     toolbar.addWidget(window.quick_highlight_opacity_spin)
+    toolbar.addWidget(QLabel("Contrast"))
+    toolbar.addWidget(window.ui_contrast_spin)
 
 
 def update_actions(window) -> None:
@@ -329,11 +368,12 @@ def update_actions(window) -> None:
     is_continuous = getattr(window, "view_mode", "single") == "continuous"
     for action in (
         window.close_action,
-        window.save_action,
         window.save_incremental_action,
         window.save_as_action,
         window.prev_action,
         window.next_action,
+        window.first_page_action,
+        window.last_page_action,
         window.zoom_out_action,
         window.zoom_in_action,
         window.continuous_view_action,
@@ -354,6 +394,7 @@ def update_actions(window) -> None:
         window.page_labels_action,
     ):
         action.setEnabled(has_doc)
+    window.save_action.setEnabled(False)
     window.delete_annotation_action.setEnabled(has_doc and window.selected_annotation_id is not None)
     window.edit_annotation_action.setEnabled(has_doc and window.selected_annotation_id is not None)
     window.debug_selected_annotation_pdf_object_action.setEnabled(
@@ -372,6 +413,8 @@ def update_actions(window) -> None:
             button.setEnabled(has_doc)
     if hasattr(window, "quick_highlight_opacity_spin"):
         window.quick_highlight_opacity_spin.setEnabled(has_doc)
+    if hasattr(window, "ui_contrast_spin"):
+        window.ui_contrast_spin.setEnabled(True)
     if getattr(window, "batch_freetext_widget", None) is not None:
         window.batch_freetext_widget.set_read_only(is_continuous)
 
@@ -401,7 +444,6 @@ def update_actions(window) -> None:
         for action in (
             window.open_action,
             window.close_action,
-            window.save_action,
             window.save_incremental_action,
             window.save_as_action,
             window.reindex_current_pdf_action,

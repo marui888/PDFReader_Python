@@ -90,6 +90,17 @@ class PdfCanvasView(QGraphicsView):
                     self.owner.go_forward_view()
                     event.accept()
                     return
+            if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+                if event.key() == Qt.Key.Key_PageUp:
+                    self.reset_boundary_turn_state()
+                    self.owner.jump_pages(-self.owner.page_jump_step)
+                    event.accept()
+                    return
+                if event.key() == Qt.Key.Key_PageDown:
+                    self.reset_boundary_turn_state()
+                    self.owner.jump_pages(self.owner.page_jump_step)
+                    event.accept()
+                    return
             if getattr(self.owner, "view_mode", "single") == "continuous":
                 self.reset_boundary_turn_state()
                 super().keyPressEvent(event)
@@ -100,6 +111,15 @@ class PdfCanvasView(QGraphicsView):
                 return
             if event.key() == Qt.Key.Key_PageDown and self.is_at_bottom():
                 self.handle_boundary_turn_intent(-1)
+                event.accept()
+                return
+            if event.key() in {Qt.Key.Key_PageUp, Qt.Key.Key_PageDown}:
+                self.reset_boundary_turn_state()
+                super().keyPressEvent(event)
+                if event.key() == Qt.Key.Key_PageUp and self.is_at_top():
+                    self.register_boundary_turn_intent("up")
+                elif event.key() == Qt.Key.Key_PageDown and self.is_at_bottom():
+                    self.register_boundary_turn_intent("down")
                 event.accept()
                 return
             self.reset_boundary_turn_state()

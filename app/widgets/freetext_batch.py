@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.services.freetext_batch import FreeTextMatch
+from app.services.ui_contrast import table_contrast_stylesheet
 
 
 class FreeTextBatchWidget(QWidget):
@@ -130,6 +131,8 @@ class FreeTextBatchWidget(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -228,14 +231,10 @@ class FreeTextBatchWidget(QWidget):
         self.add_selected_button.clicked.connect(self.emit_add_selected)
         self.delete_selected_annotation_button.clicked.connect(self.delete_selected_annotation_requested.emit)
         self.delete_all_annotations_button.clicked.connect(self.delete_all_annotations_requested.emit)
-        self.setStyleSheet(
-            """
-            QPushButton:hover {
-                background: #e6f0ff;
-                border: 1px solid #5b8def;
-            }
-            """
-        )
+        self.apply_ui_contrast(35)
+
+    def apply_ui_contrast(self, contrast: int) -> None:
+        self.table.setStyleSheet(table_contrast_stylesheet(contrast))
 
     def emit_search_requested(self) -> None:
         self.search_requested.emit(
@@ -523,6 +522,9 @@ class BatchReplacePreviewDialog(QDialog):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
+        self.table.setStyleSheet(table_contrast_stylesheet(35))
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)

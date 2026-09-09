@@ -39,6 +39,8 @@ class AnnotationModel:
     border_width: float | None
     font_size: float | None
     opacity: float | None
+    creation_date: str | None
+    modified_date: str | None
     quad_points: list[tuple[float, float]]
     line_start: tuple[float, float] | None
     line_end: tuple[float, float] | None

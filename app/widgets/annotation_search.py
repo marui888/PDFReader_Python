@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from app.services.annotation_index import AnnotationSearchResult
+from app.services.ui_contrast import table_contrast_stylesheet
 from app.search.annotation_search_query import (
     AnnotationSearchQuery,
     build_search_query,
@@ -168,6 +169,8 @@ class AnnotationSearchWidget(QWidget):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.setMouseTracking(True)
+        self.table.viewport().setMouseTracking(True)
         self.table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
@@ -215,7 +218,11 @@ class AnnotationSearchWidget(QWidget):
         for index, checkbox in enumerate(self.include_regex_checks):
             checkbox.toggled.connect(lambda checked, item_index=index: self.on_include_regex_toggled(item_index, checked))
         self.table.itemDoubleClicked.connect(lambda _item: self.emit_result_activated())
+        self.apply_ui_contrast(35)
         self.update_page_controls()
+
+    def apply_ui_contrast(self, contrast: int) -> None:
+        self.table.setStyleSheet(table_contrast_stylesheet(contrast))
 
     def set_search_rule_storage(
         self,

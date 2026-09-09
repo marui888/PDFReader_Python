@@ -90,6 +90,7 @@ class AnnotationRepository:
         border_width = self.annotation_border_width(annot)
         font_size = self.annotation_font_size(annot)
         opacity = self.annotation_opacity(annot)
+        creation_date, modified_date = self.annotation_dates(annot)
         quad_points = self.annotation_quad_points(annot)
         line_start, line_end = self.annotation_line_points(annot)
         line_ending = self.annotation_line_ending(annot)
@@ -105,6 +106,8 @@ class AnnotationRepository:
             border_width=border_width,
             font_size=font_size,
             opacity=opacity,
+            creation_date=creation_date,
+            modified_date=modified_date,
             quad_points=quad_points,
             line_start=line_start,
             line_end=line_end,
@@ -126,6 +129,12 @@ class AnnotationRepository:
     def annotation_text(self, annot: fitz.Annot) -> str:
         info = annot.info or {}
         return info.get("content") or info.get("subject") or ""
+
+    def annotation_dates(self, annot: fitz.Annot) -> tuple[str | None, str | None]:
+        info = annot.info or {}
+        creation_date = str(info.get("creationDate") or "").strip() or None
+        modified_date = str(info.get("modDate") or "").strip() or None
+        return creation_date, modified_date
 
     def annotation_color(self, annot: fitz.Annot, pdf_type: str = "") -> tuple | None:
         if pdf_type == "FreeText":

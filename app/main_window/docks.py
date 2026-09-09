@@ -39,7 +39,7 @@ def show_current_page_annotations(window) -> None:
         window.annotations_tabs = QTabWidget()
         window.annotations_tabs.setMinimumWidth(40)
         window.annotations_tabs.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
-        window.annotations_tabs.setTabPosition(QTabWidget.TabPosition.East)
+        window.annotations_tabs.setTabPosition(QTabWidget.TabPosition.North)
 
         annotation_list_page = QWidget()
         annotation_list_layout = QVBoxLayout(annotation_list_page)
@@ -82,12 +82,16 @@ def show_current_page_annotations(window) -> None:
         )
         window.batch_freetext_widget.delete_all_annotations_requested.connect(window.delete_all_batch_freetext_annotations)
 
-        window.annotations_tabs.addTab(annotation_list_page, "Annotation List")
-        window.annotations_tabs.addTab(window.properties_page, "Properties")
-        window.annotations_tabs.addTab(window.batch_freetext_widget, "Batch FreeText")
+        window.annotations_tabs.addTab(annotation_list_page, "Anno")
+        window.annotations_tabs.addTab(window.properties_page, "Props")
+        window.annotations_tabs.addTab(window.batch_freetext_widget, "FreeText")
+        window.annotations_tabs.setTabToolTip(0, "Annotation List")
+        window.annotations_tabs.setTabToolTip(1, "Properties")
+        window.annotations_tabs.setTabToolTip(2, "Batch FreeText")
         window.annotations_dock.setWidget(window.annotations_tabs)
         window.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, window.annotations_dock)
         window.resizeDocks([window.annotations_dock], [220], Qt.Orientation.Horizontal)
+        window.apply_ui_contrast()
 
     window.show_dock(window.annotations_dock)
     refresh_annotations_table(window)
@@ -204,6 +208,7 @@ def show_annotation_search(window) -> None:
         window.annotation_search_dock.setWidget(window.annotation_search_widget)
         window.annotation_search_dock.topLevelChanged.connect(window.on_search_dock_top_level_changed)
         window.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, window.annotation_search_dock)
+        window.apply_ui_contrast()
 
     window.show_dock(window.annotation_search_dock)
 
@@ -267,5 +272,6 @@ def show_navigation(window) -> None:
         window.navigation_widget.setMinimumWidth(40)
         window.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, window.navigation_dock)
         window.resizeDocks([window.navigation_dock], [180], Qt.Orientation.Horizontal)
+        window.apply_ui_contrast()
 
     window.show_dock(window.navigation_dock)
