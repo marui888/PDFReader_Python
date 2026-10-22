@@ -33,6 +33,23 @@ class CanvasController:
 
     def render_page(self, preserve_selection: bool = False, keep_view_position: bool = False) -> None:
         window = self.window
+        workspace = window.reading_workspace
+        anchor = self.capture_view_mode_anchor() if keep_view_position else None
+        selected = window.selected_annotation_id if preserve_selection else None
+        was_updating = window.updating_scene_selection
+        with workspace.sync.hold():
+            window.updating_scene_selection = True
+            try:
+                self._render_page(preserve_selection, keep_view_position)
+                if anchor is not None:
+                    self.restore_view_mode_anchor(anchor)
+                if selected in window.annotation_model_map and window.selected_annotation_id != selected:
+                    window.select_annotation(selected)
+            finally:
+                window.updating_scene_selection = was_updating
+
+    def _render_page(self, preserve_selection: bool = False, keep_view_position: bool = False) -> None:
+        window = self.window
         if window.doc is None:
             return
         if window.view_mode == "continuous":
@@ -107,6 +124,7 @@ class CanvasController:
         horizontal_value = window.view.horizontalScrollBar().value()
         vertical_value = window.view.verticalScrollBar().value()
         window.page_item.setVisible(False)
+        self.clear_continuous_page_items()
         self.clear_annotation_items()
         window.current_annotations = self.continuous_load_page_annotations(window.page_index)
 
@@ -600,6 +618,7 @@ class CanvasController:
             window.refresh_navigation()
             window.save_active_session_state()
         self.clear_continuous_selection_if_not_visible()
+        window.save_active_session_state()
 
     def current_page_index_from_continuous_view(self) -> int | None:
         window = self.window

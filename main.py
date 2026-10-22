@@ -22,6 +22,8 @@ from app.main_window import actions as main_window_actions
 from app.main_window import dialogs as main_window_dialogs
 from app.main_window import docks as main_window_docks
 from app.main_window import view as main_window_view
+from app.main_window.reading_workspace import ReadingWorkspace
+from app.widgets.reading_pane import is_reader_field
 from app.models.annotation_model import (
     ANNOTATION_COLORS,
     EDITABLE_APP_TYPES,
@@ -29,7 +31,6 @@ from app.models.annotation_model import (
 )
 from app.anchors import text_affects_anchor_data
 from app.models.continuous_view import PageLayout, PageViewItem
-from app.canvas.pdf_canvas import AnnotationScene, PdfCanvasView
 from app.canvas.inline_freetext_editor import InlineFreeTextEditorManager
 from app.services.freetext_batch import FreeTextMatch
 from app.services.freetext_batch import add_text_to_match
@@ -60,26 +61,38 @@ from app.services.ui_contrast import (
 from app.widgets.page_labels_dialog import PageLabelsDialog
 from app.widgets.freetext_batch import BatchReplacePreviewDialog
 from app.models.undo import UndoAction
-from PySide6.QtCore import QPointF, QRectF, QSize, QSizeF, Qt, QThread, QTimer, Slot
-from PySide6.QtGui import QIcon
+from PySide6.QtCore import QPointF, QRectF, QSizeF, Qt, QThread, QTimer, Slot
+from PySide6.QtGui import QIcon, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
     QDialogButtonBox,
     QDockWidget,
     QGraphicsItem,
-    QGraphicsPixmapItem,
     QMainWindow,
     QMenu,
     QPlainTextEdit,
-    QTabBar,
     QTabWidget,
     QVBoxLayout,
-    QWidget,
 )
 
 
 class MainWindow(QMainWindow):
+    def __getattribute__(self, name):
+        if is_reader_field(name):
+            workspace = super().__getattribute__("__dict__").get("reading_workspace")
+            if workspace is not None and workspace.ready:
+                return getattr(workspace.active, name)
+        return super().__getattribute__(name)
+
+    def __setattr__(self, name, value):
+        if is_reader_field(name):
+            workspace = self.__dict__.get("reading_workspace")
+            if workspace is not None and workspace.ready:
+                setattr(workspace.active, name, value)
+                return
+        super().__setattr__(name, value)
+
     def __init__(self) -> None:
         super().__init__()
         self.state = AppState()
@@ -199,39 +212,10 @@ class MainWindow(QMainWindow):
         self.ui_contrast_save_timer.setInterval(600)
         self.ui_contrast_save_timer.timeout.connect(self.save_app_settings)
 
-        self.scene = AnnotationScene(self)
-        self.scene.selectionChanged.connect(self.on_scene_selection_changed)
-        self.view = PdfCanvasView(self)
-        self.view.setScene(self.scene)
-        self.view.verticalScrollBar().valueChanged.connect(lambda _value: self.schedule_view_scrolled())
-        self.page_item = QGraphicsPixmapItem()
-        self.page_item.setZValue(0)
-        self.scene.addItem(self.page_item)
-        self.inline_freetext_editor = InlineFreeTextEditorManager(
-            self.scene,
-            lambda: self.zoom,
-            self.on_inline_freetext_accept,
-            self.on_inline_freetext_cancel,
-            self.keyword_groups,
-            lambda: self.use_graphics_freetext_editor,
-        )
-        self.document_tabs = QTabBar()
-        self.document_tabs.setExpanding(False)
-        self.document_tabs.setMovable(False)
-        self.document_tabs.setIconSize(QSize(8, 8))
-        self.document_tabs.setVisible(False)
-        self.document_tabs.setStyleSheet(document_tabbar_contrast_stylesheet(self.ui_contrast))
-        self.document_tabs.currentChanged.connect(self.on_document_tab_changed)
-        self.document_tabs.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.document_tabs.customContextMenuRequested.connect(self.show_document_tab_context_menu)
-
-        central_widget = QWidget()
-        central_layout = QVBoxLayout(central_widget)
-        central_layout.setContentsMargins(0, 0, 0, 0)
-        central_layout.setSpacing(0)
-        central_layout.addWidget(self.document_tabs)
-        central_layout.addWidget(self.view, 1)
-        self.setCentralWidget(central_widget)
+        self.continuous_scroll_timer.stop()
+        self.continuous_scroll_timer.deleteLater()
+        self.reading_workspace = ReadingWorkspace(self)
+        self.setCentralWidget(self.reading_workspace)
         self.show_navigation()
         main_window_view.create_scroll_boundary_label(self)
 
@@ -586,6 +570,9 @@ class MainWindow(QMainWindow):
             self.sessions[self.active_session_index].is_dirty = True
             self.update_document_tab_title(self.active_session_index)
         self.update_window_title()
+        if hasattr(self, "reading_workspace"):
+            source = self if hasattr(self, "host_window") else self.reading_workspace.active
+            self.reading_workspace.document_changed(source)
 
     def mark_navigation_anchors_dirty(self) -> None:
         self.navigation_anchor_dirty = True
@@ -600,6 +587,9 @@ class MainWindow(QMainWindow):
             self.sessions[self.active_session_index].is_dirty = False
             self.update_document_tab_title(self.active_session_index)
         self.update_window_title()
+        if hasattr(self, "reading_workspace"):
+            source = self if hasattr(self, "host_window") else self.reading_workspace.active
+            self.reading_workspace.document_changed(source)
 
     def clear_undo(self) -> None:
         self.undo_action = None
@@ -616,7 +606,7 @@ class MainWindow(QMainWindow):
         return self.document_controller.confirm_unsaved_session(index, action_text)
 
     def confirm_all_unsaved_for_exit(self) -> bool:
-        return self.document_controller.confirm_all_unsaved_for_exit()
+        return self.reading_workspace.confirm_exit()
 
     def go_to_page(self, page_number: int) -> None:
         if self.updating_page_spin or self.doc is None:
@@ -628,7 +618,7 @@ class MainWindow(QMainWindow):
 
         self.record_view_location_before_navigation()
         self.page_index = target_index
-        self.cancel_add_tool()
+        self.annotation_controller.clear_tool_interaction()
         if self.view_mode == "continuous":
             self.scroll_continuous_to_page(target_index)
             self.update_current_recent_page()
@@ -773,7 +763,12 @@ class MainWindow(QMainWindow):
         for menu in getattr(self, "contrast_menus", []):
             menu.setStyleSheet(menu_stylesheet)
         if hasattr(self, "document_tabs"):
-            self.document_tabs.setStyleSheet(document_tabbar_contrast_stylesheet(self.ui_contrast))
+            if hasattr(self, "reading_workspace"):
+                for pane in self.reading_workspace.panes:
+                    pane.document_tabs.setStyleSheet(document_tabbar_contrast_stylesheet(self.ui_contrast))
+                self.reading_workspace.paint_active()
+            else:
+                self.document_tabs.setStyleSheet(document_tabbar_contrast_stylesheet(self.ui_contrast))
         if getattr(self, "main_toolbar", None) is not None:
             self.main_toolbar.setStyleSheet(toolbar_stylesheet)
         if getattr(self, "annotations_tabs", None) is not None:
@@ -902,6 +897,9 @@ class MainWindow(QMainWindow):
         self.set_active_tool(active_tool)
         mode_label = "Continuous" if enabled else "Single Page"
         self.statusBar().showMessage(f"View mode: {mode_label}")
+        if hasattr(self, "reading_workspace"):
+            self.reading_workspace.sync.set_enabled(False)
+            self.save_active_session_state()
 
     def clear_continuous_page_items(self) -> None:
         self.canvas_controller.clear_continuous_page_items()
@@ -1750,7 +1748,7 @@ class MainWindow(QMainWindow):
         if self.doc is None:
             return
         self.record_view_location_before_navigation()
-        self.cancel_add_tool()
+        self.annotation_controller.clear_tool_interaction()
         self.page_index = max(0, min(page_index, len(self.doc) - 1))
         if self.view_mode == "continuous":
             found = self.scroll_continuous_to_xref(self.page_index, xref)
@@ -2706,7 +2704,7 @@ class MainWindow(QMainWindow):
         if self.doc is None or self.page_index <= 0:
             return
         self.record_view_location_before_navigation()
-        self.cancel_add_tool()
+        self.annotation_controller.clear_tool_interaction()
         self.page_index -= 1
         if self.view_mode == "continuous":
             self.scroll_continuous_to_page(self.page_index)
@@ -2723,7 +2721,7 @@ class MainWindow(QMainWindow):
         if self.doc is None or self.page_index >= len(self.doc) - 1:
             return
         self.record_view_location_before_navigation()
-        self.cancel_add_tool()
+        self.annotation_controller.clear_tool_interaction()
         self.page_index += 1
         if self.view_mode == "continuous":
             self.scroll_continuous_to_page(self.page_index)
@@ -2743,7 +2741,7 @@ class MainWindow(QMainWindow):
         if target_index == self.page_index:
             return
         self.record_view_location_before_navigation()
-        self.cancel_add_tool()
+        self.annotation_controller.clear_tool_interaction()
         self.page_index = target_index
         if self.view_mode == "continuous":
             self.scroll_continuous_to_page(self.page_index)
@@ -2759,14 +2757,25 @@ class MainWindow(QMainWindow):
         self.save_active_session_state()
 
     def zoom_in(self) -> None:
-        self.zoom = min(self.zoom + 0.25, 4.0)
-        self.render_page(preserve_selection=True)
-        self.save_active_session_state()
+        self.set_zoom_scale(min(self.zoom + 0.25, 4.0))
 
     def zoom_out(self) -> None:
-        self.zoom = max(self.zoom - 0.25, 0.5)
-        self.render_page(preserve_selection=True)
-        self.save_active_session_state()
+        self.set_zoom_scale(max(self.zoom - 0.25, 0.5))
+
+    def set_zoom_scale(self, scale: float) -> None:
+        if self.doc is None or not 0.5 <= scale <= 4.0:
+            main_window_actions.sync_zoom_scale(self, force=True)
+            return
+        if abs(self.zoom - scale) < 1e-12:
+            main_window_actions.sync_zoom_scale(self, force=True)
+            return
+        anchor = self.canvas_controller.capture_view_mode_anchor()
+        with self.reading_workspace.sync.hold():
+            self.zoom = scale
+            self.render_page(preserve_selection=True)
+            self.canvas_controller.restore_view_mode_anchor(anchor)
+            self.save_active_session_state()
+        main_window_actions.sync_zoom_scale(self, force=True)
 
     def show_error(self, title: str, exc: Exception) -> None:
         main_window_dialogs.show_error(self, title, exc)
@@ -2808,12 +2817,7 @@ class MainWindow(QMainWindow):
         self.stop_continuous_scroll_timer()
         self.cancel_add_tool()
         self.update_current_recent_page()
-        self.state.navigation.anchor_cache.clear()
-        for session in self.sessions:
-            session.doc.close()
-            self.log_debug(f"Exit closed PDF: {session.path}")
-        self.sessions.clear()
-        self.active_session_index = None
+        self.reading_workspace.shutdown()
         super().closeEvent(event)
 
 

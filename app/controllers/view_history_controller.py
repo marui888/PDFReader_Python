@@ -95,7 +95,7 @@ class ViewHistoryController:
 
             window.zoom = location.zoom
             window.page_index = max(0, min(location.page_index, len(window.doc) - 1))
-            window.cancel_add_tool()
+            window.annotation_controller.clear_tool_interaction()
             window.render_page(keep_view_position=True)
             window.view.horizontalScrollBar().setValue(location.scroll_x)
             window.view.verticalScrollBar().setValue(location.scroll_y)

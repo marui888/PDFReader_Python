@@ -23,8 +23,11 @@ from app.widgets.navigation import NavigationWidget
 
 
 def show_current_page_annotations(window) -> None:
+    window = getattr(window, "host_window", window)
     if window.annotations_dock is None:
         window.annotations_dock = QDockWidget("Annotations", window)
+        if hasattr(window, "show_annotations_action"):
+            window.annotations_dock.visibilityChanged.connect(window.show_annotations_action.setChecked)
         window.annotations_dock.setMinimumWidth(40)
         window.annotations_dock.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         window.annotations_dock.setAllowedAreas(
@@ -251,8 +254,11 @@ def toggle_search_dock_maximized(window) -> None:
 
 
 def show_navigation(window) -> None:
+    window = getattr(window, "host_window", window)
     if window.navigation_dock is None:
         window.navigation_dock = QDockWidget("Navigation", window)
+        if hasattr(window, "show_navigation_action"):
+            window.navigation_dock.visibilityChanged.connect(window.show_navigation_action.setChecked)
         window.navigation_dock.setAllowedAreas(
             Qt.DockWidgetArea.LeftDockWidgetArea | Qt.DockWidgetArea.RightDockWidgetArea
         )

@@ -22,6 +22,20 @@ class PdfCanvasView(QGraphicsView):
         self.middle_pan_active = False
         self.middle_pan_last_pos = None
 
+    def resizeEvent(self, event) -> None:
+        owner = getattr(self, "owner", None)
+        workspace = getattr(owner, "reading_workspace", None) if owner is not None else None
+        if workspace is None or not workspace.ready:
+            super().resizeEvent(event)
+            return
+        session = owner.session
+        anchor = dict(session.view_anchor) if session is not None and session.view_anchor else None
+        with workspace.sync.hold():
+            super().resizeEvent(event)
+            if owner.doc is not None and anchor is not None:
+                owner.canvas_controller.restore_view_mode_anchor(anchor)
+                owner.save_active_session_state()
+
     def wheelEvent(self, event: QWheelEvent) -> None:
         if self.owner is not None and event.modifiers() & Qt.KeyboardModifier.ControlModifier:
             if event.angleDelta().y() > 0:

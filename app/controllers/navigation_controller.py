@@ -99,7 +99,7 @@ class NavigationController:
             return
         window.record_view_location_before_navigation()
         window.page_index = target_index
-        window.cancel_add_tool()
+        window.annotation_controller.clear_tool_interaction()
         if window.view_mode == "continuous":
             window.scroll_continuous_to_page(target_index)
             window.update_current_recent_page()
@@ -120,7 +120,7 @@ class NavigationController:
         target_index = max(0, min(int(page_index), len(window.doc) - 1))
         window.record_view_location_before_navigation()
         window.page_index = target_index
-        window.cancel_add_tool()
+        window.annotation_controller.clear_tool_interaction()
         if window.view_mode == "continuous":
             found = window.scroll_continuous_to_xref(target_index, int(xref))
             window.update_current_recent_page()

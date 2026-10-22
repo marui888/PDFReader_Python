@@ -49,3 +49,4 @@ class AnnotationModel:
     dirty: bool = False
     deleted: bool = False
     source: str = "pdf"
+    blend_mode: str | None = None

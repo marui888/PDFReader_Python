@@ -31,12 +31,7 @@ def sync_page_spin(window) -> None:
 
 
 def update_window_title(window) -> None:
-    dirty_marker = " *" if window.is_dirty else ""
-    if window.doc is None:
-        window.setWindowTitle(f"PDF Note Reader{dirty_marker}")
-        return
-    name = window.pdf_path.name if window.pdf_path else "PDF"
-    window.setWindowTitle(f"{name} - Page {window.page_index + 1}/{len(window.doc)} - {window.zoom:.0%}{dirty_marker}")
+    window.setWindowTitle("PDF Note Reader")
 
 
 def show_scroll_boundary_status(window, direction: str) -> None:

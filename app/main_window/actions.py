@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import QSize, Qt
-from PySide6.QtGui import QAction
-from PySide6.QtWidgets import QLabel, QLineEdit, QMenu, QSpinBox, QToolBar, QToolButton, QWidget
+from PySide6.QtGui import QAction, QActionGroup
+from PySide6.QtWidgets import QComboBox, QLabel, QLineEdit, QMenu, QSpinBox, QToolBar, QToolButton, QWidget
 
 from app.models.annotation_model import QUICK_HIGHLIGHT_COLORS
+from app.services.icons import toolbar_icon
 
 
 def color_tuple_near(left: tuple[float, float, float], right: tuple[float, float, float]) -> bool:
@@ -55,6 +58,42 @@ def show_quick_highlight_color_menu(window, button: QToolButton, color: tuple[fl
     selected_action = menu.exec(button.mapToGlobal(pos))
     if selected_action == set_default_action:
         window.set_default_highlight_color(color)
+
+
+def set_panel_visible(window, dock_attribute: str, show_panel, visible: bool) -> None:
+    if visible:
+        show_panel()
+    else:
+        dock = getattr(window, dock_attribute)
+        if dock is not None:
+            dock.hide()
+
+
+def sync_zoom_scale(window, force: bool = False) -> None:
+    combo = getattr(window, "zoom_scale_combo", None)
+    if combo is None:
+        return
+    combo.setEnabled(window.doc is not None)
+    if force or not combo.lineEdit().hasFocus():
+        combo.setCurrentText(f"{window.zoom * 100:.6f}".rstrip("0").rstrip(".") + "%")
+
+
+def apply_zoom_scale(window) -> None:
+    if window.doc is None:
+        sync_zoom_scale(window, force=True)
+        return
+    text = window.zoom_scale_combo.currentText().strip().replace("％", "%")
+    number = text.removesuffix("%").strip()
+    if not re.fullmatch(r"(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)", number):
+        sync_zoom_scale(window, force=True)
+        window.statusBar().showMessage("Invalid zoom. Enter a percentage from 50% to 400%.", 5000)
+        return
+    percent = float(number)
+    if not 50.0 <= percent <= 400.0:
+        sync_zoom_scale(window, force=True)
+        window.statusBar().showMessage("Zoom must be between 50% and 400%.", 5000)
+        return
+    window.set_zoom_scale(percent / 100.0)
 
 
 def create_actions(window) -> None:
@@ -140,32 +179,70 @@ def create_actions(window) -> None:
     window.zoom_in_action = QAction("Zoom +", window)
     window.zoom_in_action.triggered.connect(window.zoom_in)
 
+    window.zoom_scale_combo = QComboBox(window)
+    window.zoom_scale_combo.setEditable(True)
+    window.zoom_scale_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+    window.zoom_scale_combo.addItems([
+        "50%", "75%", "100%", "125%", "150%", "175%", "200%", "250%", "300%", "400%",
+    ])
+    window.zoom_scale_combo.setFixedWidth(100)
+    window.zoom_scale_combo.setToolTip("Zoom 50%-400%. Select a value or enter a percentage and press Enter.")
+    window.zoom_scale_combo.activated.connect(lambda _index: apply_zoom_scale(window))
+    window.zoom_scale_combo.lineEdit().returnPressed.connect(lambda: apply_zoom_scale(window))
+    sync_zoom_scale(window, force=True)
+
     window.continuous_view_action = QAction("Continuous", window)
     window.continuous_view_action.setCheckable(True)
     window.continuous_view_action.triggered.connect(
         lambda checked=False: window.set_continuous_view_enabled(checked)
     )
+    window.side_by_side_action = QAction("Side by Side", window)
+    window.side_by_side_action.setCheckable(True)
+    window.side_by_side_action.triggered.connect(window.reading_workspace.set_side_by_side)
+    window.sync_vertical_action = QAction("Sync Vertical Scrolling", window)
+    window.sync_vertical_action.setCheckable(True)
+    window.sync_vertical_action.setEnabled(False)
+    window.sync_vertical_action.triggered.connect(
+        lambda checked=False: window.reading_workspace.sync.set_enabled(checked)
+    )
 
     window.text_mode_action = QAction("Text", window)
     window.text_mode_action.setCheckable(True)
     window.text_mode_action.setChecked(True)
-    window.text_mode_action.triggered.connect(window.activate_text_mode)
+    window.text_mode_action.triggered.connect(
+        lambda checked=False: window.reading_workspace.activate_tool(None)
+    )
 
     window.add_typewriter_action = QAction("FreeText", window)
     window.add_typewriter_action.setCheckable(True)
-    window.add_typewriter_action.triggered.connect(window.add_typewriter)
+    window.add_typewriter_action.triggered.connect(
+        lambda checked=False: window.reading_workspace.activate_tool("freetext")
+    )
 
     window.add_rectangle_action = QAction("Square", window)
     window.add_rectangle_action.setCheckable(True)
-    window.add_rectangle_action.triggered.connect(window.add_rectangle)
+    window.add_rectangle_action.triggered.connect(
+        lambda checked=False: window.reading_workspace.activate_tool("square")
+    )
 
     window.add_highlight_action = QAction("Highlight", window)
     window.add_highlight_action.setCheckable(True)
-    window.add_highlight_action.triggered.connect(window.add_highlight)
+    window.add_highlight_action.triggered.connect(
+        lambda checked=False: window.reading_workspace.activate_tool("highlight")
+    )
 
     window.add_arrow_action = QAction("Arrow", window)
     window.add_arrow_action.setCheckable(True)
-    window.add_arrow_action.triggered.connect(window.add_arrow)
+    window.add_arrow_action.triggered.connect(
+        lambda checked=False: window.reading_workspace.activate_tool("arrow")
+    )
+
+    window.annotation_tool_group = QActionGroup(window)
+    window.annotation_tool_group.setExclusive(True)
+    for action in (window.text_mode_action, window.add_typewriter_action,
+                   window.add_rectangle_action, window.add_highlight_action,
+                   window.add_arrow_action):
+        window.annotation_tool_group.addAction(action)
 
     window.quick_highlight_opacity_spin = QSpinBox()
     window.quick_highlight_opacity_spin.setRange(0, 100)
@@ -207,10 +284,21 @@ def create_actions(window) -> None:
         window.quick_highlight_color_buttons.append((button, color))
 
     window.show_annotations_action = QAction("Annotations", window)
-    window.show_annotations_action.triggered.connect(window.show_current_page_annotations)
-
     window.show_navigation_action = QAction("Navigation", window)
-    window.show_navigation_action.triggered.connect(window.show_navigation)
+    for action, dock_attribute, show_panel in (
+        (window.show_annotations_action, "annotations_dock", window.show_current_page_annotations),
+        (window.show_navigation_action, "navigation_dock", window.show_navigation),
+    ):
+        action.setCheckable(True)
+        action.triggered.connect(
+            lambda checked, dock_name=dock_attribute, show=show_panel: set_panel_visible(
+                window, dock_name, show, checked
+            )
+        )
+        dock = getattr(window, dock_attribute)
+        if dock is not None:
+            dock.visibilityChanged.connect(action.setChecked)
+            action.setChecked(not dock.isHidden())
 
     window.audit_current_page_action = QAction("Audit Current Page", window)
     window.audit_current_page_action.triggered.connect(window.audit_current_page)
@@ -280,13 +368,15 @@ def create_menus(window) -> None:
     view_menu = window.menuBar().addMenu("View")
     window.view_menu = view_menu
     view_menu.addAction(window.continuous_view_action)
+    view_menu.addSeparator()
+    view_menu.addAction(window.show_annotations_action)
+    view_menu.addAction(window.show_navigation_action)
+    view_menu.addSeparator()
+    view_menu.addAction(window.side_by_side_action)
+    view_menu.addAction(window.sync_vertical_action)
 
     tools_menu = window.menuBar().addMenu("Tools")
     window.tools_menu = tools_menu
-    tools_menu.addAction(window.show_navigation_action)
-    tools_menu.addSeparator()
-    tools_menu.addAction(window.show_annotations_action)
-    tools_menu.addSeparator()
     tools_menu.addAction(window.audit_current_page_action)
     tools_menu.addAction(window.audit_document_summary_action)
     tools_menu.addSeparator()
@@ -342,6 +432,7 @@ def create_toolbar(window) -> None:
 
     toolbar.addAction(window.zoom_out_action)
     toolbar.addAction(window.zoom_in_action)
+    toolbar.addWidget(window.zoom_scale_combo)
     toolbar.addAction(window.continuous_view_action)
 
     toolbar.addSeparator()
@@ -361,8 +452,25 @@ def create_toolbar(window) -> None:
     toolbar.addWidget(QLabel("Contrast"))
     toolbar.addWidget(window.ui_contrast_spin)
 
+    for action, icon_name in (
+        (window.zoom_in_action, "zoom_in"),
+        (window.zoom_out_action, "zoom_out"),
+        (window.add_typewriter_action, "freetext"),
+        (window.add_rectangle_action, "square"),
+        (window.add_highlight_action, "highlight"),
+        (window.add_arrow_action, "arrow"),
+    ):
+        action.setIcon(toolbar_icon(icon_name))
+        button = toolbar.widgetForAction(action)
+        if isinstance(button, QToolButton):
+            button.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            button.setIconSize(QSize(14, 14))
+            button.setAccessibleName(action.text())
+
 
 def update_actions(window) -> None:
+    window.reading_workspace.update_actions()
+    sync_zoom_scale(window)
     has_doc = window.doc is not None
     is_reindexing = window.reindex_thread is not None
     is_continuous = getattr(window, "view_mode", "single") == "continuous"
@@ -382,7 +490,6 @@ def update_actions(window) -> None:
         window.add_rectangle_action,
         window.add_highlight_action,
         window.add_arrow_action,
-        window.show_annotations_action,
         window.audit_current_page_action,
         window.audit_document_summary_action,
         window.backup_current_pdf_action,

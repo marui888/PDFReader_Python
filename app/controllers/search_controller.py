@@ -286,7 +286,7 @@ class SearchController:
         if window.doc is None:
             return
 
-        window.cancel_add_tool()
+        window.annotation_controller.clear_tool_interaction()
         window.page_index = max(0, min(page_index, len(window.doc) - 1))
         if window.view_mode == "continuous":
             found = window.scroll_continuous_to_xref(window.page_index, xref)

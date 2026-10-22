@@ -6,6 +6,7 @@ import shutil
 import tempfile
 from time import perf_counter
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 
 import pymupdf as fitz
@@ -14,7 +15,7 @@ from PySide6.QtWidgets import QFileDialog, QMenu
 
 from app.repositories.annotation_repository import AnnotationRepository
 from app.main_window import dialogs as main_window_dialogs
-from app.models.document_session import DocumentSession
+from app.models.document_session import DocumentSession, SharedDocument
 from app.services.pdf_audit import audit_current_page as run_audit_current_page
 from app.services.pdf_audit import format_audit_report
 from app.services.pdf_audit import report_has_errors
@@ -22,6 +23,23 @@ from app.services.pdf_external_tools import backup_pdf_file
 from app.services.icons import dirty_dot_icon
 from app.services.pdf_external_tools import run_qpdf_check
 from app.services.pdf_external_tools import rewrite_pdf_with_qpdf
+
+
+def shared_document_save(method):
+    """Refresh every view after the existing mandatory document close/reopen."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self.window.reading_workspace.saving_document(self.window):
+            return method(self, *args, **kwargs)
+    return wrapped
+
+
+def preserve_annotation_tool(method):
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        with self.window.reading_workspace.preserve_tool_mode():
+            return method(self, *args, **kwargs)
+    return wrapped
 
 
 class DocumentController:
@@ -39,10 +57,13 @@ class DocumentController:
 
     def open_pdf_path(self, path: Path, page_index: int = 0) -> bool:
         window = self.window
-        existing_index = self.session_index_for_path(path)
-        if existing_index is not None:
+        workspace = window.reading_workspace
+        existing = workspace.find_session(path, preferred=window)
+        if existing is not None:
+            pane, existing_index = existing
             window.log_debug(f"Open switched to existing tab: {path}")
-            self.set_active_session(existing_index, preserve_selection=True)
+            workspace.activate(pane)
+            pane.document_controller.set_active_session(existing_index, preserve_selection=True)
             return True
 
         try:
@@ -56,10 +77,10 @@ class DocumentController:
             window.log_debug(f"Open loaded: {path} pages={len(new_doc)}")
             self.save_active_session_state()
             session = DocumentSession(
-                doc=new_doc,
-                path=path,
+                document=SharedDocument(new_doc, path),
                 page_index=max(0, min(page_index, len(new_doc) - 1)),
                 zoom=window.zoom,
+                view_mode=window.view_mode,
             )
             window.sessions.append(session)
             self.add_document_tab(session)
@@ -121,7 +142,12 @@ class DocumentController:
             target = path.resolve()
         except OSError:
             target = path
-        for index, session in enumerate(window.sessions):
+        indices = list(range(len(window.sessions)))
+        if window.active_session_index in indices:
+            indices.remove(window.active_session_index)
+            indices.insert(0, window.active_session_index)
+        for index in indices:
+            session = window.sessions[index]
             try:
                 session_path = session.path.resolve()
             except OSError:
@@ -141,6 +167,10 @@ class DocumentController:
         session.zoom = window.zoom
         session.is_dirty = window.is_dirty
         session.selected_annotation_id = window.selected_annotation_id
+        session.view_mode = window.view_mode
+        session.view_anchor = window.canvas_controller.capture_view_mode_anchor()
+        session.history_back = list(window.view_history_controller.back_stack)
+        session.history_forward = list(window.view_history_controller.forward_stack)
         self.update_document_tab_title(window.active_session_index)
 
     def add_document_tab(self, session: DocumentSession) -> None:
@@ -185,6 +215,7 @@ class DocumentController:
     def update_document_tab_icon(self, index: int, session: DocumentSession) -> None:
         self.window.document_tabs.setTabIcon(index, dirty_dot_icon() if session.is_dirty else QIcon())
 
+    @preserve_annotation_tool
     def set_active_session(self, index: int, preserve_selection: bool = False) -> None:
         window = self.window
         started_at = perf_counter()
@@ -203,7 +234,11 @@ class DocumentController:
             )
             return
 
+        window.reading_workspace.sync.set_enabled(False)
+
         cancel_started_at = perf_counter()
+        if window.inline_freetext_editor.is_active():
+            window.inline_freetext_editor.accept_current()
         window.cancel_add_tool()
         cancel_ms = (perf_counter() - cancel_started_at) * 1000
 
@@ -214,16 +249,25 @@ class DocumentController:
         assign_started_at = perf_counter()
         window.active_session_index = index
         session = window.sessions[index]
+        target_anchor = dict(session.view_anchor) if session.view_anchor else None
+        target_selection = session.selected_annotation_id
         window.doc = session.doc
         window.annotation_repo = AnnotationRepository(window.doc)
         window.clear_continuous_annotation_cache()
+        window.updating_scene_selection = True
+        try:
+            window.clear_continuous_page_items()
+        finally:
+            window.updating_scene_selection = False
         window.clear_continuous_pixmap_cache()
         window.pdf_path = session.path
         window.page_index = max(0, min(session.page_index, len(window.doc) - 1))
         window.zoom = session.zoom
+        window.view_mode = session.view_mode
         window.is_dirty = session.is_dirty
-        window.selected_annotation_id = session.selected_annotation_id if preserve_selection else None
-        window.clear_undo()
+        window.selected_annotation_id = target_selection if preserve_selection else None
+        window.view_history_controller.back_stack = list(session.history_back)
+        window.view_history_controller.forward_stack = list(session.history_forward)
         window.current_annotations = []
         assign_ms = (perf_counter() - assign_started_at) * 1000
 
@@ -237,6 +281,12 @@ class DocumentController:
 
         render_started_at = perf_counter()
         window.render_page(preserve_selection=preserve_selection)
+        if target_anchor is not None:
+            with window.reading_workspace.sync.hold():
+                window.canvas_controller.restore_view_mode_anchor(target_anchor)
+                self.save_active_session_state()
+        window.reading_workspace.note_activation(window)
+        window.reading_workspace.update_actions()
         render_ms = (perf_counter() - render_started_at) * 1000
 
         recent_started_at = perf_counter()
@@ -269,6 +319,9 @@ class DocumentController:
             return
 
         menu = QMenu(window)
+        move_to_other_action = menu.addAction("Move to Other Pane")
+        open_in_other_action = menu.addAction("Open in Other Pane")
+        menu.addSeparator()
         save_incremental_action = menu.addAction("Save Incremental")
         backup_action = menu.addAction("Backup Current PDF")
         qpdf_check_action = menu.addAction("QPDF Check Current PDF")
@@ -281,7 +334,11 @@ class DocumentController:
         close_all_action.setEnabled(bool(window.sessions))
 
         selected_action = menu.exec(window.document_tabs.mapToGlobal(pos))
-        if selected_action == save_incremental_action:
+        if selected_action == move_to_other_action:
+            window.reading_workspace.move_to_other(window, index)
+        elif selected_action == open_in_other_action:
+            window.reading_workspace.open_in_other(window, index)
+        elif selected_action == save_incremental_action:
             self.set_active_session(index, preserve_selection=True)
             window.save_incremental()
         elif selected_action == backup_action:
@@ -379,11 +436,16 @@ class DocumentController:
             window.log_debug(f"QPDF rewrite failed: {exc}")
             window.show_error("QPDF Rewrite Current PDF failed", exc)
 
+    @preserve_annotation_tool
     def close_document_tab(self, index: int) -> bool:
         window = self.window
         if index < 0 or index >= len(window.sessions):
             return True
-        if not window.confirm_unsaved_session(index, "close this PDF"):
+        if index == window.active_session_index and window.inline_freetext_editor.is_active():
+            window.inline_freetext_editor.accept_current()
+        document = window.sessions[index].document
+        last_view = len(window.reading_workspace.references(document)) == 1
+        if last_view and not window.confirm_unsaved_session(index, "close this PDF"):
             window.log_debug(f"Close tab canceled: {window.sessions[index].path}")
             return False
         closed_path = window.sessions[index].path
@@ -418,61 +480,37 @@ class DocumentController:
                 return False
         return True
 
+    @preserve_annotation_tool
     def close_session(self, index: int) -> None:
         window = self.window
         if index < 0 or index >= len(window.sessions):
             return
 
-        was_active = index == window.active_session_index
-        session = window.sessions.pop(index)
-        if was_active:
-            self.update_current_recent_page()
-        window.state.navigation.anchor_cache.pop(id(session.doc), None)
-        if window.navigation_anchor_doc_id == id(session.doc):
-            window.navigation_anchor_doc_id = None
-            window.navigation_anchor_dirty = True
-        session.doc.close()
-
-        window.updating_document_tabs = True
-        try:
-            window.document_tabs.removeTab(index)
-            window.document_tabs.setVisible(window.document_tabs.count() > 0)
-        finally:
-            window.updating_document_tabs = False
-
-        if not window.sessions:
-            window.stop_continuous_scroll_timer()
-            window.active_session_index = None
-            window.doc = None
-            window.annotation_repo = None
-            window.pdf_path = None
-            window.page_index = 0
-            window.is_dirty = False
-            window.selected_annotation_id = None
-            window.clear_undo()
-            window.current_annotations = []
-            window.clear_annotation_items()
-            window.clear_continuous_page_items()
-            window.clear_continuous_annotation_cache()
-            window.clear_continuous_pixmap_cache()
-            window.continuous_page_layouts = []
-            window.continuous_layout_doc_id = None
-            window.continuous_layout_zoom = None
-            window.page_item.setPixmap(QPixmap())
-            window.scene.setSceneRect(0, 0, 0, 0)
-            window.sync_page_spin()
-            window.update_window_title()
-            window.statusBar().showMessage("No PDF open")
-            window.refresh_annotations_table()
-            window.refresh_properties_panel()
-            window.refresh_navigation()
-            window.refresh_annotation_search_status()
-            window.update_actions()
-            return
-
-        next_index = min(index, len(window.sessions) - 1)
-        window.active_session_index = None
-        self.set_active_session(next_index, preserve_selection=True)
+        workspace = window.reading_workspace
+        workspace.sync.set_enabled(False)
+        with workspace.sync.hold():
+            was_active = index == window.active_session_index
+            if was_active:
+                window.cancel_add_tool()
+                self.save_active_session_state()
+                self.update_current_recent_page()
+            session = window.sessions.pop(index)
+            if was_active:
+                workspace.clear_pane(window)
+            elif window.active_session_index is not None and window.active_session_index > index:
+                window.active_session_index -= 1
+            window.updating_document_tabs = True
+            try:
+                window.document_tabs.removeTab(index)
+                window.document_tabs.setVisible(bool(window.sessions))
+            finally:
+                window.updating_document_tabs = False
+            if not workspace.references(session.document):
+                if session.doc is not None and not session.doc.is_closed:
+                    session.doc.close()
+            if was_active and window.sessions:
+                self.set_active_session(min(index, len(window.sessions) - 1), preserve_selection=True)
+            workspace.refresh_active()
 
     def recent_file_index(self, path: Path) -> int | None:
         window = self.window
@@ -532,7 +570,8 @@ class DocumentController:
             page_number = int(record.get("last_page_index", 0)) + 1
             action = window.open_recent_menu.addAction(f"{path.name} - page {page_number}")
             action.setToolTip(str(path))
-            action.triggered.connect(lambda checked=False, recent_path=path: window.open_recent_pdf(recent_path))
+            host = window.host_window
+            action.triggered.connect(lambda checked=False, recent_path=path: host.open_recent_pdf(recent_path))
 
         window.open_recent_menu.addSeparator()
         clear_action = window.open_recent_menu.addAction("Clear Recent Files")
@@ -678,11 +717,7 @@ class DocumentController:
             if run_safety_checks:
                 backup_path = backup_pdf_file(window.pdf_path)
                 window.log_debug(f"Save Incremental backup created: {backup_path}")
-            window.doc.saveIncr()
-            if run_safety_checks:
-                report_path = run_qpdf_check(window.pdf_path, window.qpdf_bin_dir, fail_on_error=True)
-                window.log_debug(f"Save Incremental qpdf check OK: {report_path}")
-            self.reopen_current_pdf_after_incremental_save(window.page_index, window.selected_annotation_id)
+            report_path = self.write_incremental_and_reopen(run_safety_checks)
             window.clear_dirty()
             window.clear_undo()
             window.log_debug(f"Save Incremental completed: {window.pdf_path} backup={backup_path}")
@@ -703,6 +738,21 @@ class DocumentController:
             window.show_error("Save Incremental failed", exc)
             return False
 
+    @shared_document_save
+    def write_incremental_and_reopen(self, run_safety_checks: bool):
+        window = self.window
+        page_index = window.page_index
+        selected_annotation_id = window.selected_annotation_id
+        window.doc.saveIncr()
+        try:
+            if run_safety_checks:
+                report_path = run_qpdf_check(window.pdf_path, window.qpdf_bin_dir, fail_on_error=True)
+                window.log_debug(f"Save Incremental qpdf check OK: {report_path}")
+                return report_path
+            return None
+        finally:
+            self.reopen_current_pdf_after_incremental_save(page_index, selected_annotation_id)
+
     def reopen_current_pdf_after_incremental_save(
         self, page_index: int, selected_annotation_id: str | None = None
     ) -> None:
@@ -714,6 +764,7 @@ class DocumentController:
         window.log_debug(f"Reopen after Save Incremental started: {current_path}")
         window.cancel_add_tool()
         window.doc.close()
+        window.doc = None
         window.doc = fitz.open(current_path)
         if len(window.doc) == 0:
             window.doc.close()
@@ -736,6 +787,7 @@ class DocumentController:
         window.render_page(preserve_selection=selected_annotation_id is not None, keep_view_position=True)
         window.log_debug(f"Reopen after Save Incremental completed: {current_path} pages={len(window.doc)}")
 
+    @shared_document_save
     def save_full_rewrite_to_current_path(self) -> Path:
         window = self.window
         if window.doc is None or window.pdf_path is None:
@@ -907,26 +959,21 @@ class DocumentController:
             window.log_debug("Save As canceled by user")
             return False
 
+        existing = window.reading_workspace.find_session(Path(file_name))
+        if existing is not None:
+            main_window_dialogs.show_warning(
+                window, "Save As",
+                "The destination PDF is already open. Choose another file name; "
+                "use Save or Save Incremental to save the current PDF in place.",
+            )
+            return False
+
         try:
             window.log_debug(f"Save As started: {file_name}")
-            window.doc.save(file_name, garbage=4, deflate=True)
-            page_index = window.page_index
-            window.doc.close()
-            window.doc = fitz.open(file_name)
-            window.annotation_repo = AnnotationRepository(window.doc)
-            window.clear_continuous_annotation_cache()
-            window.clear_continuous_pixmap_cache()
-            window.pdf_path = Path(file_name)
-            window.page_index = max(0, min(page_index, len(window.doc) - 1))
-            if window.active_session_index is not None and 0 <= window.active_session_index < len(window.sessions):
-                session = window.sessions[window.active_session_index]
-                session.doc = window.doc
-                session.path = window.pdf_path
-                session.page_index = window.page_index
+            self.save_as_path(Path(file_name))
             window.clear_dirty()
             window.clear_undo()
             self.update_recent_file(window.pdf_path, window.page_index)
-            window.render_page()
             window.log_debug(f"Save As completed: {file_name}")
             main_window_dialogs.show_information(window, "Saved", f"Saved to:\n{file_name}")
             return True
@@ -934,3 +981,23 @@ class DocumentController:
             window.log_debug(f"Save As failed: {exc}")
             window.show_error("Save failed", exc)
             return False
+
+    @shared_document_save
+    def save_as_path(self, path: Path) -> None:
+        window = self.window
+        page_index = window.page_index
+        original_path = window.pdf_path
+        window.doc.save(path, garbage=4, deflate=True)
+        window.doc.close()
+        window.doc = None
+        try:
+            window.doc = fitz.open(path)
+            if len(window.doc) == 0:
+                window.doc.close()
+                raise RuntimeError("The saved PDF has no readable pages.")
+            window.pdf_path = path
+        except Exception:
+            window.doc = fitz.open(original_path)
+            raise
+        window.annotation_repo = AnnotationRepository(window.doc)
+        window.page_index = max(0, min(page_index, len(window.doc) - 1))

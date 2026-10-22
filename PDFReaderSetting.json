@@ -5,7 +5,7 @@
     0.25,
     1.0
   ],
-  "default_highlight_opacity": 0.31,
+  "default_highlight_opacity": 0.3,
   "extract_highlight_text_on_reindex": true,
   "freetext_font_size_min": 7,
   "freetext_font_size_max": 31,
@@ -13,14 +13,29 @@
   "qpdf_bin_dir": "D:\\tools\\qpdf-12.3.2-msvc64\\bin",
   "recent_files": [
     {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\\u9ad8\u4e2d\u6570\u5b66\u4e4b\u65c520260208.pdf",
-      "last_page_index": 196,
-      "last_opened_at": "2026-09-02T12:43:35+08:00"
+      "path": "F:\\books English\\Peter Hessler\uff1aRiver Town_JOM.pdf",
+      "last_page_index": 33,
+      "last_opened_at": "2026-10-23T00:50:26+08:00"
     },
     {
-      "path": "C:\\Users\\Admin\\Desktop\\\u7b14\u8bb0 \u63d0\u793a\u8bcd \u63d0\u95ee\\Typst\u7b14\u8bb0\\Typst Tutorial _JOM.pdf",
-      "last_page_index": 26,
-      "last_opened_at": "2026-08-11T13:52:28+08:00"
+      "path": "C:\\tmp\u7b14\u8bb0\\tmpPDF\u6587\u672c\u7b14\u8bb0\\temp Effective C++ 3rd En \u539f\u7248_JOM.pdf",
+      "last_page_index": 197,
+      "last_opened_at": "2026-10-23T00:50:20+08:00"
+    },
+    {
+      "path": "C:\\tmp\u7b14\u8bb0\\tmpPDF\u6587\u672c\u7b14\u8bb0\\temp \u4f20\u667a\u64ad\u5ba2 \u8f7b\u677e\u641e\u5b9a C\u8bed\u8a00 \u57fa\u7840\u7bc7 (it-ebooks) (z-lib.org).pdf",
+      "last_page_index": 1,
+      "last_opened_at": "2026-10-21T22:48:42+08:00"
+    },
+    {
+      "path": "C:\\tmp\u7b14\u8bb0\\tmpPDF\u6587\u672c\u7b14\u8bb0\\\u9ad8\u4e2d\u6570\u5b66\u57f9\u4f1840\u8bb2-01-\u51fd\u6570\u4e0e\u5bfc\u6570 (\u5f20\u6c38\u8f89) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+      "last_page_index": 5,
+      "last_opened_at": "2026-10-21T22:21:33+08:00"
+    },
+    {
+      "path": "C:\\tmp\u7b14\u8bb0\\tmpPDF\u6587\u672c\u7b14\u8bb0\\\u9ad8\u4e2d\u6570\u5b66\u57f9\u4f1840\u8bb2-02-\u89e3\u6790\u51e0\u4f55 (\u5f20\u6c38\u8f89) (z-library.sk, 1lib.sk, z-lib.sk).pdf",
+      "last_page_index": 1,
+      "last_opened_at": "2026-10-21T22:16:45+08:00"
     },
     {
       "path": "D:\\prj_PDFReader\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
@@ -46,16 +61,6 @@
       "path": "D:\\prj_PDFReader\\pdfdoc\\\u5e8f\u53f7\u5b57\u7b26\u529f\u80fd\u6d4b\u8bd52 -\u6837\u672c.pdf",
       "last_page_index": 0,
       "last_opened_at": "2026-07-04T10:29:11+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
-      "last_page_index": 316,
-      "last_opened_at": "2026-07-03T12:13:39+08:00"
-    },
-    {
-      "path": "D:\\prj_KonvasPDF\\pdfs\\53\u9ad8\u4e2d\u6570\u5b66\u4eba\u6559A\u7248\u5fc5\u4fee2\u5168\u7ec3\u7248.pdf",
-      "last_page_index": 17,
-      "last_opened_at": "2026-06-28T16:01:06+08:00"
     }
   ],
   "recent_search_rule_files": [

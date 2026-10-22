@@ -21,6 +21,8 @@ class AnnotationController:
 
     def on_scene_selection_changed(self) -> None:
         window = self.window
+        if window.reading_workspace.active is not window:
+            return
         if window.updating_scene_selection:
             return
 
@@ -1780,17 +1782,17 @@ class AnnotationController:
         self.show_page_status()
 
     def set_active_tool(self, tool: str | None) -> None:
+        self.window.reading_workspace.set_annotation_tool(tool)
+
+    def apply_active_tool(self, tool: str | None) -> None:
         window = self.window
         self.remove_tool_preview()
         if tool is not None:
             self.clear_text_selection()
         window.active_tool = tool
         window.tool_start_scene_pos = None
-        window.text_mode_action.setChecked(tool is None)
-        window.add_typewriter_action.setChecked(tool == "freetext")
-        window.add_rectangle_action.setChecked(tool == "square")
-        window.add_highlight_action.setChecked(tool == "highlight")
-        window.add_arrow_action.setChecked(tool == "arrow")
+        if window.reading_workspace.active is window:
+            window.reading_workspace.sync_tool_actions()
 
         if tool is None:
             window.view.viewport().setCursor(Qt.CursorShape.ArrowCursor)
@@ -1800,6 +1802,8 @@ class AnnotationController:
             window.view.viewport().setCursor(Qt.CursorShape.IBeamCursor)
         else:
             window.view.viewport().setCursor(Qt.CursorShape.CrossCursor)
+        if window.reading_workspace.active is not window:
+            return
         if tool == "freetext":
             window.statusBar().showMessage("Click on the page to add FreeText. Press Esc to cancel.")
         elif tool == "highlight":
@@ -1813,6 +1817,13 @@ class AnnotationController:
     def cancel_add_tool(self) -> None:
         self.remove_tool_preview()
         self.set_active_tool(None)
+
+    def clear_tool_interaction(self) -> None:
+        """End an unfinished gesture without changing the workspace tool."""
+        self.remove_tool_preview()
+        self.window.tool_start_scene_pos = None
+        self.window.clear_scene_drag_state()
+        self.clear_text_selection()
 
     def on_tool_mouse_press(self, scene_pos, button=None) -> bool:
         window = self.window
@@ -2017,6 +2028,7 @@ class AnnotationController:
 
     def select_annotation(self, annotation_id: str | None, center_on: bool = False) -> None:
         window = self.window
+        is_active = window.reading_workspace.active is window
         if annotation_id is not None and annotation_id not in window.annotation_model_map:
             return
 
@@ -2030,7 +2042,7 @@ class AnnotationController:
         if annotation_id is None:
             self.show_page_status()
             window.update_actions()
-            if window.navigation_widget is not None:
+            if is_active and window.navigation_widget is not None:
                 window.navigation_widget.set_anchor_insert_enabled(False)
             if not window.applying_property_change:
                 window.refresh_properties_panel()
@@ -2049,6 +2061,9 @@ class AnnotationController:
             self.draw_selection_for_model(model)
             if center_on:
                 self.center_on_annotation(model)
+
+        if not is_active:
+            return
 
         summary = model.text.strip().replace("\n", " ")
         if len(summary) > 40:
@@ -2361,6 +2376,8 @@ class AnnotationController:
 
     def show_page_status(self) -> None:
         window = self.window
+        if window.reading_workspace.active is not window:
+            return
         if window.doc is None:
             window.statusBar().showMessage("No PDF open")
             return

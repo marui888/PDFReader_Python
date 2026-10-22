@@ -113,6 +113,7 @@ class AnnotationRepository:
             line_end=line_end,
             line_ending=line_ending,
             is_supported=app_type in SUPPORTED_APP_TYPES,
+            blend_mode=self.annotation_blend_mode(annot),
         )
 
     def classify_annotation(self, annot: fitz.Annot, pdf_type: str) -> str:
@@ -195,6 +196,23 @@ class AnnotationRepository:
         if not match:
             return None
         return float(match.group(1))
+
+    def annotation_blend_mode(self, annot: fitz.Annot) -> str | None:
+        # PyMuPDF resolves the appearance stream's ExtGState as well as /BM on
+        # the annotation. Older Foxit highlights can store Multiply only in AP.
+        try:
+            mode = annot.blendmode
+            if isinstance(mode, str) and mode:
+                return mode.lstrip("/")
+        except Exception:
+            pass
+        try:
+            kind, value = self.doc.xref_get_key(annot.xref, "BM")
+            if kind == "name":
+                return value.lstrip("/")
+        except Exception:
+            pass
+        return None
 
     def annotation_opacity(self, annot: fitz.Annot) -> float | None:
         try:

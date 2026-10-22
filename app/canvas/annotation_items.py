@@ -4,10 +4,32 @@ from math import atan2, cos, pi, sin
 
 import pymupdf as fitz
 from PySide6.QtCore import QLineF, QPointF, QRectF, Qt
-from PySide6.QtGui import QBrush, QColor, QFont, QPen, QPolygonF
-from PySide6.QtWidgets import QGraphicsItem, QGraphicsScene
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
+from PySide6.QtWidgets import QGraphicsItem, QGraphicsPolygonItem, QGraphicsScene
 
 from app.models.annotation_model import AnnotationModel
+
+
+class HighlightGraphicsItem(QGraphicsPolygonItem):
+    """Composite the highlight with the page instead of hiding its text."""
+
+    def __init__(self, polygon: QPolygonF, color: QColor, blend_mode: str | None):
+        super().__init__(polygon)
+        self.setPen(QPen(Qt.PenStyle.NoPen))
+        self.setBrush(QBrush(color))
+        self.composition_mode = (
+            QPainter.CompositionMode.CompositionMode_Multiply
+            if blend_mode == "Multiply"
+            else QPainter.CompositionMode.CompositionMode_SourceOver
+        )
+
+    def paint(self, painter, option, widget=None):
+        painter.save()
+        try:
+            painter.setCompositionMode(self.composition_mode)
+            super().paint(painter, option, widget)
+        finally:
+            painter.restore()
 
 
 class AnnotationItemRenderer:
@@ -44,18 +66,21 @@ class AnnotationItemRenderer:
     def add_highlight_item(self, model: AnnotationModel) -> None:
         color = self.pdf_color(model.color, QColor(255, 235, 59))
         opacity = model.opacity if model.opacity is not None else self.default_highlight_opacity
-        color.setAlpha(max(20, min(255, int(255 * opacity))))
+        color.setAlpha(max(0, min(255, int(round(255 * opacity)))))
 
         quad_polygons = self.highlight_polygons(model)
         if quad_polygons:
             for polygon in quad_polygons:
-                item = self.scene.addPolygon(polygon, QPen(Qt.PenStyle.NoPen), QBrush(color))
+                item = HighlightGraphicsItem(polygon, color, model.blend_mode)
+                self.scene.addItem(item)
                 self.register_item(item, model)
                 self.add_highlight_hit_item(polygon, model)
             return
 
         rect = self.scene_rect(model.rect)
-        item = self.scene.addRect(rect, QPen(Qt.PenStyle.NoPen), QBrush(color))
+        polygon = QPolygonF([rect.topLeft(), rect.topRight(), rect.bottomRight(), rect.bottomLeft()])
+        item = HighlightGraphicsItem(polygon, color, model.blend_mode)
+        self.scene.addItem(item)
         self.register_item(item, model)
         self.add_rect_hit_item(rect, model)
 

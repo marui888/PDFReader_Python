@@ -117,6 +117,13 @@ def toolbar_contrast_stylesheet(contrast: int) -> str:
         color: #111111;
         border: 1px solid #5b8def;
     }}
+    QToolBar#mainToolbar QToolButton:checked,
+    QToolBar#mainToolbar QToolButton:checked:hover,
+    QToolBar#mainToolbar QToolButton:checked:pressed {{
+        background-color: #0078d4;
+        color: #ffffff;
+        border: 1px solid #0078d4;
+    }}
     """
 
 
