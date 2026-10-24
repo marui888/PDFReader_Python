@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import time
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, Signal, QTimer
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -12,8 +12,12 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QHBoxLayout,
     QHeaderView,
+    QGroupBox,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
+    QMainWindow,
     QFileDialog,
     QMessageBox,
     QMenu,
@@ -28,7 +32,9 @@ from PySide6.QtWidgets import (
 )
 
 from app.services.annotation_index import AnnotationSearchResult
+from app.models.index_management import IndexSnapshot
 from app.services.ui_contrast import table_contrast_stylesheet
+from app.widgets.recent_term_input import RecentTermLineEdit
 from app.search.annotation_search_query import (
     AnnotationSearchQuery,
     build_search_query,
@@ -47,15 +53,17 @@ class AnnotationSearchWidget(QWidget):
         self.results: list[AnnotationSearchResult] = []
         self.page_size = 500
         self.current_page_index = 0
-        self.indexed_files: list[tuple[str, str]] = []
-        self.selected_document_paths: set[str] = set()
+        self.source_snapshot = IndexSnapshot()
+        # None means All; an empty set means no remaining selected sources, never All.
+        self.selected_source_keys: set[str] | None = None
+        self.refresh_sources: Callable[[], None] | None = None
         self.search_rule_dir = Path.cwd() / "search_rules"
         self.recent_search_rule_files: list[str] = []
         self.recent_search_rules_changed: Callable[[list[str]], None] | None = None
         self.include_mode_combo = QComboBox()
         self.include_mode_combo.addItem("AND", "all")
         self.include_mode_combo.addItem("OR", "any")
-        self.include_inputs = [QLineEdit() for _index in range(4)]
+        self.include_inputs = [RecentTermLineEdit(self) for _index in range(4)]
         for index, input_box in enumerate(self.include_inputs, start=1):
             input_box.setPlaceholderText(f"term{index}")
         self.include_whole_word_checks = [QCheckBox("W") for _index in range(4)]
@@ -70,7 +78,7 @@ class AnnotationSearchWidget(QWidget):
         self.exclude_mode_combo.addItem("AND", "all")
         self.exclude_mode_combo.addItem("OR", "any")
         self.exclude_mode_combo.setCurrentIndex(1)
-        self.exclude_inputs = [QLineEdit() for _index in range(2)]
+        self.exclude_inputs = [RecentTermLineEdit(self) for _index in range(2)]
         for index, input_box in enumerate(self.exclude_inputs, start=1):
             input_box.setPlaceholderText(f"term{index}")
         self.type_combo = QComboBox()
@@ -80,7 +88,7 @@ class AnnotationSearchWidget(QWidget):
         self.type_combo.addItem("Square", "square")
         self.type_combo.addItem("Arrow", "arrow")
         self.type_combo.addItem("Unsupported", "unsupported")
-        self.file_filter_button = QPushButton("All files")
+        self.file_filter_button = QPushButton("All sources")
         self.clear_include_button = QPushButton("Clear")
         self.clear_exclude_button = QPushButton("Clear")
         self.save_query_button = QPushButton("Save")
@@ -140,7 +148,7 @@ class AnnotationSearchWidget(QWidget):
         type_row.addWidget(QLabel("Type"))
         type_row.addWidget(self.type_combo, 1)
         files_row = QHBoxLayout()
-        files_row.addWidget(QLabel("Files"))
+        files_row.addWidget(QLabel("Sources"))
         files_row.addWidget(self.file_filter_button, 1)
         button_row = QHBoxLayout()
         button_row.addWidget(self.search_button)
@@ -235,7 +243,16 @@ class AnnotationSearchWidget(QWidget):
         self.recent_search_rules_changed = recent_changed
 
     def emit_search_requested(self) -> None:
-        selected_paths = sorted(self.selected_document_paths) if self.selected_document_paths else None
+        try:
+            if self.refresh_sources is not None:
+                self.refresh_sources()
+        except Exception as exc:
+            QMessageBox.warning(self, "Sources", f"Unable to read indexed sources:\n{exc}")
+            return
+        if self.selected_source_keys is not None and not self.selected_source_keys:
+            QMessageBox.information(self, "Sources", "Please select All or at least one source.")
+            return
+        selected_paths = self.selected_source_document_paths()
         self.search_requested.emit(self.current_search_query(), self.type_combo.currentData(), selected_paths)
 
     def current_search_query(self) -> AnnotationSearchQuery:
@@ -469,7 +486,9 @@ class AnnotationSearchWidget(QWidget):
             "exclude_mode": self.current_exclude_mode(),
             "exclude_terms": [input_box.text() for input_box in self.exclude_inputs],
             "type": self.type_combo.currentData(),
-            "selected_document_paths": sorted(self.selected_document_paths),
+            "selected_source_keys": (
+                sorted(self.selected_source_keys) if self.selected_source_keys is not None else None
+            ),
         }
 
     def apply_query_state(self, state: dict) -> None:
@@ -488,11 +507,35 @@ class AnnotationSearchWidget(QWidget):
         for index, input_box in enumerate(self.exclude_inputs):
             input_box.setText(str(exclude_terms[index]) if index < len(exclude_terms) else "")
         self.type_combo.setCurrentIndex(max(0, self.type_combo.findData(state.get("type"))))
-        selected_paths = state.get("selected_document_paths", [])
-        if isinstance(selected_paths, list):
-            available_paths = {path for path, _file_name in self.indexed_files}
-            self.selected_document_paths = {str(path) for path in selected_paths if str(path) in available_paths}
-            self.update_file_filter_button()
+        if self.refresh_sources is not None:
+            self.refresh_sources()
+        if "selected_source_keys" in state:
+            keys = state["selected_source_keys"]
+            if keys is not None and not isinstance(keys, list):
+                raise ValueError("selected_source_keys must be a list or null")
+            self.selected_source_keys = (
+                {str(key) for key in keys} & self.source_snapshot.source_keys
+                if keys is not None else None
+            )
+        else:
+            # Old query files filtered individual PDFs. Only migrate exact source coverage;
+            # never silently widen the search to a whole folder or to All.
+            from app.models.index_management import path_key
+            paths = state.get("selected_document_paths", [])
+            requested = {path_key(str(path)) for path in paths} if isinstance(paths, list) else set()
+            self.selected_source_keys = {
+                key for key, members in self.source_snapshot.members.items()
+                if members and members <= requested
+            } if requested else None
+            covered = set().union(*(
+                self.source_snapshot.members[key] for key in self.selected_source_keys
+            )) if self.selected_source_keys else set()
+            if requested and covered != requested:
+                QMessageBox.information(
+                    self, "Sources", "The saved Files filter cannot be fully mapped to current sources. "
+                    "Please choose the Sources filter again."
+                )
+        self.update_file_filter_button()
         self.update_advanced_button()
 
     def save_query_to_file(self) -> None:
@@ -560,93 +603,165 @@ class AnnotationSearchWidget(QWidget):
             self.advanced_button.setText("Advanced...")
             self.advanced_button.setToolTip("Configure include/exclude text conditions")
 
-    def set_indexed_files(self, files: list[tuple[str, str]]) -> None:
-        self.indexed_files = files
-        available_paths = {path for path, _file_name in files}
-        self.selected_document_paths = {
-            path for path in self.selected_document_paths if path in available_paths
-        }
+    def set_indexed_sources(self, snapshot: IndexSnapshot) -> None:
+        self.source_snapshot = snapshot
+        if self.selected_source_keys is not None:
+            self.selected_source_keys.intersection_update(snapshot.source_keys)
         self.update_file_filter_button()
 
+    def selected_source_document_paths(self) -> list[str] | None:
+        if self.selected_source_keys is None:
+            return None
+        members: set[str] = set()
+        for key in self.selected_source_keys:
+            members.update(self.source_snapshot.members.get(key, set()))
+        return sorted(
+            self.source_snapshot.documents[key]["path"]
+            for key in members if key in self.source_snapshot.documents
+        )
+
     def show_file_filter_dialog(self) -> None:
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Select Indexed Files")
-        dialog.setMinimumWidth(420)
-        dialog.setWindowFlag(Qt.WindowType.Popup, True)
-
+        try:
+            if self.refresh_sources is not None:
+                self.refresh_sources()
+        except Exception as exc:
+            QMessageBox.warning(self, "Sources", f"Unable to read indexed sources:\n{exc}")
+            return
+        host = self.parentWidget()
+        while host is not None and not isinstance(host, QMainWindow):
+            host = host.parentWidget()
+        host = host or self.window()
+        dialog = QDialog(host)
+        dialog.setWindowTitle("Select Sources")
+        dialog.resize(680, 580)
         layout = QVBoxLayout(dialog)
-        all_checkbox = QCheckBox("All files")
-        all_checkbox.setChecked(not self.selected_document_paths)
+        all_checkbox = QCheckBox("All")
+        all_checkbox.setChecked(self.selected_source_keys is None)
         layout.addWidget(all_checkbox)
-
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        list_widget = QWidget()
-        list_layout = QVBoxLayout(list_widget)
-        list_layout.setContentsMargins(0, 0, 0, 0)
-        file_checkboxes: list[tuple[QCheckBox, str]] = []
-        for path, file_name in self.indexed_files:
-            checkbox = QCheckBox(self.elided_file_name(file_name))
-            checkbox.setToolTip(path)
-            checkbox.setChecked(path in self.selected_document_paths)
-            list_layout.addWidget(checkbox)
-            file_checkboxes.append((checkbox, path))
-        list_layout.addStretch(1)
-        scroll_area.setWidget(list_widget)
-        layout.addWidget(scroll_area)
-
+        source_list = QListWidget()
+        source_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        sources = {source.key: source for source in self.source_snapshot.sources}
+        for source in self.source_snapshot.sources:
+            kind = "Folder" if source.kind == "folder" else "File"
+            name = Path(source.path).name or source.path
+            item = QListWidgetItem(f"[{kind}] {name}")
+            item.setData(Qt.ItemDataRole.UserRole, source.key)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(
+                Qt.CheckState.Checked if self.selected_source_keys is not None
+                and source.key in self.selected_source_keys else Qt.CheckState.Unchecked
+            )
+            source_list.addItem(item)
+        layout.addWidget(source_list, 3)
+        info_group = QGroupBox("Selected Source Info")
+        info_layout = QVBoxLayout(info_group)
+        info = QPlainTextEdit()
+        info.setReadOnly(True)
+        info.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        info_layout.addWidget(info)
+        layout.addWidget(info_group, 2)
         buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel)
         layout.addWidget(buttons)
 
-        def sync_file_checkboxes() -> None:
-            all_checked = all_checkbox.isChecked()
-            for checkbox, _path in file_checkboxes:
-                checkbox.setEnabled(not all_checked)
-                if all_checked:
-                    checkbox.setChecked(False)
+        def checked_keys() -> set[str]:
+            return {
+                source_list.item(row).data(Qt.ItemDataRole.UserRole)
+                for row in range(source_list.count())
+                if source_list.item(row).checkState() == Qt.CheckState.Checked
+            }
 
-        def on_file_checkbox_changed(_state: int) -> None:
-            if any(checkbox.isChecked() for checkbox, _path in file_checkboxes):
-                all_checkbox.blockSignals(True)
+        def update_details(inspect_row: bool = False) -> None:
+            if all_checkbox.isChecked() and not inspect_row:
+                info.setPlainText(
+                    f"All sources\nSources: {len(sources)}\n"
+                    f"Indexed PDFs (unique): {len(self.source_snapshot.documents)}"
+                )
+                return
+            item = source_list.currentItem()
+            source = sources.get(item.data(Qt.ItemDataRole.UserRole)) if item else None
+            if source is None:
+                info.setPlainText("Select a source row to view its details.")
+                return
+            members = self.source_snapshot.members.get(source.key, set())
+            annotation_count = sum(
+                self.source_snapshot.documents[key].get("annotation_count", 0)
+                for key in members if key in self.source_snapshot.documents
+            )
+            lines = [
+                f"Type: {'Folder' if source.kind == 'folder' else 'File'}",
+                f"Name: {Path(source.path).name or source.path}",
+                f"Full path: {source.path}",
+                f"Indexed at: {source.indexed_at or 'Not recorded'}",
+                f"Indexed PDFs: {len(members)}",
+                f"Indexed annotations: {annotation_count}",
+            ]
+            if source.kind == "folder":
+                lines.append(f"Include subfolders: {'Yes' if source.recursive else 'No'}")
+            info.setPlainText("\n".join(lines))
+
+        def update_validity() -> None:
+            buttons.button(QDialogButtonBox.StandardButton.Ok).setEnabled(
+                all_checkbox.isChecked() or bool(checked_keys())
+            )
+
+        def all_changed(checked: bool) -> None:
+            # Keep rows selectable for inspection even when All is active.
+            if checked:
+                source_list.blockSignals(True)
+                for row in range(source_list.count()):
+                    source_list.item(row).setCheckState(Qt.CheckState.Unchecked)
+                source_list.blockSignals(False)
+            update_details()
+            update_validity()
+
+        def item_changed(item: QListWidgetItem) -> None:
+            if item.checkState() == Qt.CheckState.Checked:
                 all_checkbox.setChecked(False)
-                all_checkbox.blockSignals(False)
-                sync_file_checkboxes()
+            update_validity()
 
-        all_checkbox.stateChanged.connect(lambda _state: sync_file_checkboxes())
-        for checkbox, _path in file_checkboxes:
-            checkbox.stateChanged.connect(on_file_checkbox_changed)
+        def row_changed(current, _previous) -> None:
+            # Selecting a row only inspects it; it does not change the search scope.
+            update_details(inspect_row=current is not None)
+
+        all_checkbox.toggled.connect(all_changed)
+        source_list.itemChanged.connect(item_changed)
+        source_list.currentItemChanged.connect(row_changed)
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
-        sync_file_checkboxes()
+        update_details()
+        update_validity()
 
-        top_left = self.file_filter_button.mapToGlobal(self.file_filter_button.rect().bottomLeft())
-        dialog.move(top_left)
+        def center_dialog() -> None:
+            screen = host.screen()
+            available = screen.availableGeometry() if screen is not None else host.frameGeometry()
+            dialog.resize(min(680, available.width()), min(580, available.height()))
+            frame = dialog.frameGeometry()
+            frame.moveCenter(host.frameGeometry().center())
+            x = max(available.left(), min(frame.left(), available.right() - frame.width() + 1))
+            y = max(available.top(), min(frame.top(), available.bottom() - frame.height() + 1))
+            dialog.move(x, y)
+
+        QTimer.singleShot(0, center_dialog)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-
-        if all_checkbox.isChecked():
-            self.selected_document_paths.clear()
-        else:
-            self.selected_document_paths = {
-                path for checkbox, path in file_checkboxes if checkbox.isChecked()
-            }
+        self.selected_source_keys = None if all_checkbox.isChecked() else checked_keys()
         self.update_file_filter_button()
 
     def update_file_filter_button(self) -> None:
-        if not self.selected_document_paths:
-            self.file_filter_button.setText("All files")
-            self.file_filter_button.setToolTip("Search all indexed files")
+        self.file_filter_button.setToolTip("")
+        if self.selected_source_keys is None:
+            self.file_filter_button.setText("All sources")
             return
-
-        if len(self.selected_document_paths) == 1:
-            path = next(iter(self.selected_document_paths))
-            file_name = next((name for item_path, name in self.indexed_files if item_path == path), Path(path).name)
-            self.file_filter_button.setText(self.elided_file_name(file_name))
-            self.file_filter_button.setToolTip(path)
+        if len(self.selected_source_keys) == 1:
+            source = next((source for source in self.source_snapshot.sources
+                           if source.key in self.selected_source_keys), None)
+            self.file_filter_button.setText(self.elided_file_name(
+                Path(source.path).name or source.path
+            ) if source else "No sources selected")
             return
-
-        self.file_filter_button.setText(f"{len(self.selected_document_paths)} files")
-        self.file_filter_button.setToolTip("\n".join(sorted(self.selected_document_paths)))
+        self.file_filter_button.setText(
+            f"{len(self.selected_source_keys)} sources" if self.selected_source_keys else "No sources selected"
+        )
 
     def elided_file_name(self, file_name: str, max_chars: int = 34) -> str:
         if len(file_name) <= max_chars:

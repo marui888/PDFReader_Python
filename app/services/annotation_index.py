@@ -137,6 +137,20 @@ class AnnotationIndex:
         extract_highlight_text: bool = False,
         progress_callback: Callable[[int, int, int], None] | None = None,
     ) -> int:
+        steps = self.reindex_document_steps(doc, path, extract_highlight_text, progress_callback)
+        try:
+            while True:
+                next(steps)
+        except StopIteration as done:
+            return done.value
+        finally:
+            steps.close()
+
+    def reindex_document_steps(
+        self, doc: fitz.Document, path: Path, extract_highlight_text: bool = False,
+        progress_callback: Callable[[int, int, int], None] | None = None,
+    ):
+        """Yield after each page; closing the generator rolls back this PDF transaction."""
         repository = AnnotationRepository(doc)
         self.last_warnings = []
         stat = path.stat() if path.exists() else None
@@ -192,6 +206,7 @@ class AnnotationIndex:
                         repository.add_warning(page_index, "index_annotation", exc, annot)
                 if progress_callback is not None:
                     progress_callback(page_index + 1, page_count, count)
+                yield
             self.last_warnings = [warning.format() for warning in repository.warnings]
             return count
 
@@ -246,10 +261,14 @@ class AnnotationIndex:
         if app_type:
             where.append("annotations.app_type = ?")
             parameters.append(app_type)
-        if document_paths:
-            placeholders = ", ".join("?" for _ in document_paths)
-            where.append(f"documents.path IN ({placeholders})")
-            parameters.extend(document_paths)
+        if document_paths is not None:
+            if document_paths:
+                placeholders = ", ".join("?" for _ in document_paths)
+                where.append(f"documents.path IN ({placeholders})")
+                parameters.extend(document_paths)
+            else:
+                # An explicitly empty source scope must not become an unfiltered search.
+                where.append("0")
         where_sql = "WHERE " + " AND ".join(where) if where else ""
         limit_sql = ""
         if limit is not None:
@@ -411,7 +430,7 @@ class AnnotationIndex:
                 return DocumentIndexStatus(
                     path=path_text,
                     is_indexed=False,
-                    message="Current PDF is not indexed. Use Reindex Current PDF.",
+                    message="Current PDF is not indexed. Use Tools > Index Management.",
                 )
             annotation_count = int(
                 connection.execute(
@@ -596,7 +615,7 @@ class AnnotationIndex:
         return inside
 
     def timestamp(self) -> str:
-        return datetime.now().isoformat(timespec="seconds")
+        return datetime.now().isoformat(timespec="microseconds")
 
     def normalized_color(self, color: tuple | None) -> tuple[float | None, float | None, float | None]:
         if not color or len(color) < 3:

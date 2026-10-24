@@ -301,6 +301,8 @@ def create_actions(window) -> None:
             action.setChecked(not dock.isHidden())
 
     window.audit_current_page_action = QAction("Audit Current Page", window)
+    window.bulk_edit_annotation_action = QAction("Edit Annotation…", window)
+    window.bulk_edit_annotation_action.triggered.connect(window.bulk_annotation_controller.show)
     window.audit_current_page_action.triggered.connect(window.audit_current_page)
 
     window.audit_document_summary_action = QAction("Audit Document Summary", window)
@@ -323,6 +325,9 @@ def create_actions(window) -> None:
 
     window.index_database_info_action = QAction("Index Database Info", window)
     window.index_database_info_action.triggered.connect(window.show_index_database_info)
+
+    window.index_management_action = QAction("Index Management…", window)
+    window.index_management_action.triggered.connect(window.index_management_controller.show)
 
     window.search_annotations_action = QAction("Search Annotations", window)
     window.search_annotations_action.triggered.connect(window.show_annotation_search)
@@ -377,6 +382,8 @@ def create_menus(window) -> None:
 
     tools_menu = window.menuBar().addMenu("Tools")
     window.tools_menu = tools_menu
+    tools_menu.addAction(window.bulk_edit_annotation_action)
+    tools_menu.addSeparator()
     tools_menu.addAction(window.audit_current_page_action)
     tools_menu.addAction(window.audit_document_summary_action)
     tools_menu.addSeparator()
@@ -384,9 +391,7 @@ def create_menus(window) -> None:
     tools_menu.addAction(window.qpdf_check_current_pdf_action)
     tools_menu.addAction(window.qpdf_rewrite_current_pdf_action)
     tools_menu.addSeparator()
-    tools_menu.addAction(window.reindex_current_pdf_action)
-    tools_menu.addAction(window.clear_annotation_index_action)
-    tools_menu.addAction(window.index_database_info_action)
+    tools_menu.addAction(window.index_management_action)
     tools_menu.addAction(window.search_annotations_action)
     tools_menu.addSeparator()
     tools_menu.addAction(window.debug_current_page_state_action)
@@ -473,6 +478,14 @@ def update_actions(window) -> None:
     sync_zoom_scale(window)
     has_doc = window.doc is not None
     is_reindexing = window.reindex_thread is not None
+    is_index_updating = window.index_management_controller.applying
+    window.bulk_edit_annotation_action.setEnabled(
+        has_doc and not is_reindexing and not is_index_updating
+        and not window.index_management_controller.preparing and not window.bulk_annotation_controller.busy
+    )
+    window.open_action.setEnabled(not is_reindexing and not is_index_updating and not window.bulk_annotation_controller.busy)
+    if window.open_recent_menu is not None:
+        window.open_recent_menu.setEnabled(not is_index_updating and not window.bulk_annotation_controller.busy)
     is_continuous = getattr(window, "view_mode", "single") == "continuous"
     for action in (
         window.close_action,
@@ -523,7 +536,9 @@ def update_actions(window) -> None:
     if hasattr(window, "ui_contrast_spin"):
         window.ui_contrast_spin.setEnabled(True)
     if getattr(window, "batch_freetext_widget", None) is not None:
-        window.batch_freetext_widget.set_read_only(is_continuous)
+        window.batch_freetext_widget.set_read_only(
+            not has_doc or is_reindexing or is_index_updating or window.bulk_annotation_controller.busy
+        )
 
     window.continuous_view_action.setChecked(is_continuous)
     if not has_doc or window.doc is None:
@@ -547,6 +562,9 @@ def update_actions(window) -> None:
     window.page_spin.setMaximum(len(window.doc))
     window.page_count_label.setText(f"/ {len(window.doc)}")
     window.book_label_input.setEnabled(True)
+    if window.index_management_controller.is_path_busy(window.pdf_path):
+        window.save_incremental_action.setEnabled(False)
+        window.save_as_action.setEnabled(False)
     if is_reindexing:
         for action in (
             window.open_action,

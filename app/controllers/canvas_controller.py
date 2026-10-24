@@ -11,6 +11,7 @@ from PySide6.QtGui import QColor, QImage, QPixmap, QPolygonF
 from PySide6.QtWidgets import QGraphicsItem, QGraphicsPixmapItem
 
 from app.canvas.annotation_items import AnnotationItemRenderer
+from app.canvas.annotation_locator import AnnotationLocator
 from app.models.annotation_model import DRAGGABLE_APP_TYPES, AnnotationModel
 from app.models.continuous_view import PageLayout, PageViewItem
 
@@ -18,6 +19,7 @@ from app.models.continuous_view import PageLayout, PageViewItem
 class CanvasController:
     def __init__(self, window) -> None:
         self.window = window
+        self.annotation_locator = AnnotationLocator(window)
 
     def safe_remove_scene_item(self, item: QGraphicsItem | None) -> None:
         window = self.window
@@ -32,6 +34,10 @@ class CanvasController:
             return
 
     def render_page(self, preserve_selection: bool = False, keep_view_position: bool = False) -> None:
+        bulk = getattr(self.window, "bulk_annotation_controller", None)
+        if bulk is not None and bulk.rendering_suspended:
+            return
+        self.annotation_locator.stop()
         window = self.window
         workspace = window.reading_workspace
         anchor = self.capture_view_mode_anchor() if keep_view_position else None
@@ -170,6 +176,8 @@ class CanvasController:
 
     def build_continuous_page_layouts(self) -> None:
         window = self.window
+        if self.annotation_locator.items and self.annotation_locator.context != self.annotation_locator._context():
+            self.annotation_locator.stop()
         if window.doc is None:
             window.continuous_page_layouts = []
             self.clear_continuous_annotation_cache()
@@ -389,6 +397,9 @@ class CanvasController:
         )
 
     def render_visible_continuous_pages(self) -> None:
+        bulk = getattr(self.window, "bulk_annotation_controller", None)
+        if bulk is not None and bulk.rendering_suspended:
+            return
         window = self.window
         if window.doc is None or not window.continuous_page_layouts:
             return
@@ -588,6 +599,7 @@ class CanvasController:
             )
 
     def clear_continuous_page_items(self) -> None:
+        self.annotation_locator.stop()
         window = self.window
         for item in list(getattr(window, "continuous_page_items", {}).values()):
             for annotation_item in item.annotation_items or []:
@@ -796,6 +808,55 @@ class CanvasController:
             if not model.is_supported:
                 continue
             renderer.render(model)
+
+    def refresh_after_batch_annotation_change(self, preserve_selection: bool = True) -> None:
+        """Invalidate every edited page, including off-screen pages, without scrolling.
+
+        Batch FreeText can edit the whole document. The ordinary single-page
+        overlay renderer must not be used at a continuous page's scene origin.
+        PDF page content has not changed, so cached background pixmaps are reusable.
+        """
+        window = self.window
+        if window.doc is None:
+            return
+        if window.view_mode != "continuous":
+            self.refresh_annotation_overlay(preserve_selection)
+            return
+        selected = window.selected_annotation_id if preserve_selection else None
+        horizontal = window.view.horizontalScrollBar()
+        vertical = window.view.verticalScrollBar()
+        scroll_x, scroll_y = horizontal.value(), vertical.value()
+        updating = window.updating_scene_selection
+        suppress_scroll = window.continuous_suppress_scroll_sync
+        window.stop_continuous_scroll_timer()
+        with window.reading_workspace.sync.hold():
+            window.updating_scene_selection = True
+            window.continuous_suppress_scroll_sync = True
+            try:
+                window.selected_annotation_id = None
+                window.clear_selection_items()
+                self.clear_continuous_page_items()
+                self.clear_continuous_annotation_cache()
+                window.annotation_model_map.clear()
+                # Page geometry is unchanged. Retain exact scrollbar positions
+                # rather than recentering the view on a different page/annotation.
+                horizontal.setValue(scroll_x)
+                vertical.setValue(scroll_y)
+                self.render_visible_continuous_pages()
+                window.current_annotations = self.continuous_load_page_annotations(window.page_index)
+                if selected in window.annotation_model_map:
+                    window.annotation_controller.select_annotation(selected, center_on=False)
+                else:
+                    window.annotation_controller.select_annotation(None)
+                horizontal.setValue(scroll_x)
+                vertical.setValue(scroll_y)
+                window.refresh_annotations_table()
+                window.refresh_properties_panel()
+                window.update_actions()
+                window.save_active_session_state()
+            finally:
+                window.updating_scene_selection = updating
+                window.continuous_suppress_scroll_sync = suppress_scroll
 
     def refresh_annotation_overlay(self, preserve_selection: bool = True) -> None:
         window = self.window

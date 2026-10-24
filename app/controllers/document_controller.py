@@ -29,6 +29,10 @@ def shared_document_save(method):
     """Refresh every view after the existing mandatory document close/reopen."""
     @wraps(method)
     def wrapped(self, *args, **kwargs):
+        if self.window.index_management_controller.is_path_busy(self.window.pdf_path):
+            raise RuntimeError("此 PDF 正在建立索引，请等待任务结束后再保存。")
+        if args and isinstance(args[0], Path) and self.window.index_management_controller.is_path_busy(args[0]):
+            raise RuntimeError("目标 PDF 属于正在索引的来源，请等待任务结束后再保存。")
         with self.window.reading_workspace.saving_document(self.window):
             return method(self, *args, **kwargs)
     return wrapped
@@ -46,8 +50,20 @@ class DocumentController:
     def __init__(self, window) -> None:
         self.window = window
 
+    def index_allows_save(self) -> bool:
+        if self.window.index_management_controller.is_path_busy(self.window.pdf_path):
+            main_window_dialogs.show_warning(
+                self.window, "Index Management", "此 PDF 所在来源正在建立索引，请等待任务结束后再保存。",
+            )
+            return False
+        return True
+
     def open_pdf(self) -> None:
         window = self.window
+        if window.bulk_annotation_controller.busy:
+            return
+        if window.index_management_controller.applying:
+            return
         file_name, _ = QFileDialog.getOpenFileName(window, "Open PDF", "", "PDF files (*.pdf)")
         if not file_name:
             return
@@ -57,6 +73,13 @@ class DocumentController:
 
     def open_pdf_path(self, path: Path, page_index: int = 0) -> bool:
         window = self.window
+        if window.bulk_annotation_controller.busy:
+            return False
+        if window.index_management_controller.applying:
+            main_window_dialogs.show_warning(
+                window, "Index Management", "Update 期间不能打开 PDF，请等待任务完成或取消。",
+            )
+            return False
         workspace = window.reading_workspace
         existing = workspace.find_session(path, preferred=window)
         if existing is not None:
@@ -218,6 +241,7 @@ class DocumentController:
     @preserve_annotation_tool
     def set_active_session(self, index: int, preserve_selection: bool = False) -> None:
         window = self.window
+        window.canvas_controller.annotation_locator.stop()
         started_at = perf_counter()
         if index < 0 or index >= len(window.sessions):
             return
@@ -651,6 +675,8 @@ class DocumentController:
         window = self.window
         if window.doc is None:
             return True
+        if not self.index_allows_save():
+            return False
 
         if window.pdf_path is None:
             return self.save_as()
@@ -684,6 +710,8 @@ class DocumentController:
         window = self.window
         if window.doc is None:
             return True
+        if not self.index_allows_save():
+            return False
 
         if window.pdf_path is None:
             main_window_dialogs.show_warning(
@@ -949,6 +977,8 @@ class DocumentController:
         window = self.window
         if window.doc is None:
             return True
+        if not self.index_allows_save():
+            return False
 
         default_name = "annotated.pdf"
         if window.pdf_path:

@@ -13,14 +13,29 @@
   "qpdf_bin_dir": "D:\\tools\\qpdf-12.3.2-msvc64\\bin",
   "recent_files": [
     {
-      "path": "F:\\books English\\Peter Hessler\uff1aRiver Town_JOM.pdf",
-      "last_page_index": 33,
-      "last_opened_at": "2026-10-23T00:50:26+08:00"
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Effective C++ 3rd En \u539f\u7248_JOM.pdf",
+      "last_page_index": 217,
+      "last_opened_at": "2026-10-24T10:04:21+08:00"
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Fei-Fei Li - The Worlds I See_ Curiosity, Exploration, and Discovery at the Dawn of AI-Flatiron Books_ A Moment of Lift Book (2023) \u8f6c\u5316\u7248 _JOM.pdf",
+      "last_page_index": 19,
+      "last_opened_at": "2026-10-23T23:16:59+08:00"
     },
     {
       "path": "C:\\tmp\u7b14\u8bb0\\tmpPDF\u6587\u672c\u7b14\u8bb0\\temp Effective C++ 3rd En \u539f\u7248_JOM.pdf",
       "last_page_index": 197,
-      "last_opened_at": "2026-10-23T00:50:20+08:00"
+      "last_opened_at": "2026-10-23T22:05:40+08:00"
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Bill Gates - Source Code_ My Beginnings-Penguin (2025) _JOM.pdf",
+      "last_page_index": 133,
+      "last_opened_at": "2026-10-23T20:35:00+08:00"
+    },
+    {
+      "path": "F:\\books English\\Peter Hessler\uff1aRiver Town_JOM.pdf",
+      "last_page_index": 35,
+      "last_opened_at": "2026-10-23T20:03:47+08:00"
     },
     {
       "path": "C:\\tmp\u7b14\u8bb0\\tmpPDF\u6587\u672c\u7b14\u8bb0\\temp \u4f20\u667a\u64ad\u5ba2 \u8f7b\u677e\u641e\u5b9a C\u8bed\u8a00 \u57fa\u7840\u7bc7 (it-ebooks) (z-lib.org).pdf",
@@ -46,25 +61,56 @@
       "path": "D:\\prj_PDFReader\\pdfdoc\\\u5e8f\u53f7\u5b57\u7b26\u529f\u80fd\u6d4b\u8bd52.pdf",
       "last_page_index": 3,
       "last_opened_at": "2026-07-04T15:17:36+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\\u5e8f\u53f7\u5b57\u7b26\u529f\u80fd\u6d4b\u8bd53.pdf",
-      "last_page_index": 0,
-      "last_opened_at": "2026-07-04T11:01:18+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\\u5e8f\u53f7\u5b57\u7b26\u529f\u80fd\u6d4b\u8bd51.pdf",
-      "last_page_index": 0,
-      "last_opened_at": "2026-07-04T10:29:29+08:00"
-    },
-    {
-      "path": "D:\\prj_PDFReader\\pdfdoc\\\u5e8f\u53f7\u5b57\u7b26\u529f\u80fd\u6d4b\u8bd52 -\u6837\u672c.pdf",
-      "last_page_index": 0,
-      "last_opened_at": "2026-07-04T10:29:11+08:00"
     }
   ],
   "recent_search_rule_files": [
     "D:\\prj_PDFReader\\search_rules\\advanced-search-rule.json"
+  ],
+  "recent_index_sources": [
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Walter Isaacson - Elon Musk-Simon & Schuster (2024) \u8f6c\u5316\u7248 _JOM.pdf",
+      "kind": "file",
+      "recursive": false
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Steve Jobs (2011, Simon & Schuster) Walter Isaacson \u8f6c\u5316\u7248 _JOM.pdf",
+      "kind": "file",
+      "recursive": false
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Peter Hessler\uff1aRiver Town_JOM.pdf",
+      "kind": "file",
+      "recursive": false
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\House of Huawei The Secret History of Chinas Most Powerful Company (Eva Dou) \u8f6c\u5316\u7248 (Z-Library)_JOM.pdf",
+      "kind": "file",
+      "recursive": false
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Fluent Python  2nd -O'Reilly Media (2022) \u539f\u7248 _JOM.pdf",
+      "kind": "file",
+      "recursive": false
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Fei-Fei Li - The Worlds I See_ Curiosity, Exploration, and Discovery at the Dawn of AI-Flatiron Books_ A Moment of Lift Book (2023) \u8f6c\u5316\u7248 _JOM.pdf",
+      "kind": "file",
+      "recursive": false
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Effective C++ 3rd En \u539f\u7248_JOM.pdf",
+      "kind": "file",
+      "recursive": false
+    },
+    {
+      "path": "C:\\PDFReader_Python\\pdfdoc\\Bill Gates - Source Code_ My Beginnings-Penguin (2025) _JOM.pdf",
+      "kind": "file",
+      "recursive": false
+    }
+  ],
+  "recent_search_terms": [
+    "//mr",
+    "//mr!!"
   ],
   "save_incremental_safety_default": false,
   "anchor_page_basis": "book",

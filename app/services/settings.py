@@ -4,6 +4,7 @@ from pathlib import Path
 
 from app.services.shortcuts import merged_shortcuts
 from app.services.ui_contrast import clamp_contrast
+from app.services.search_term_history import normalize_search_terms
 
 
 @dataclass
@@ -26,6 +27,8 @@ class AppSettings:
     ui_contrast: int = 35
     recent_files: list[dict] = field(default_factory=list)
     recent_search_rule_files: list[str] = field(default_factory=list)
+    recent_index_sources: list[dict] = field(default_factory=list)
+    recent_search_terms: list[str] = field(default_factory=list)
     shortcuts: dict[str, str] = field(default_factory=lambda: merged_shortcuts({}))
 
 
@@ -62,6 +65,14 @@ def load_settings(path: Path, max_recent_files: int = 10) -> AppSettings:
     if anchor_page_basis in {"physical", "book"}:
         settings.anchor_page_basis = anchor_page_basis
     settings.recent_files = normalize_recent_files(data.get("recent_files", []), max_recent_files)
+    settings.recent_search_terms = normalize_search_terms(data.get("recent_search_terms", []))
+    index_sources = data.get("recent_index_sources", [])
+    if isinstance(index_sources, list):
+        settings.recent_index_sources = [
+            {"path": str(item["path"]), "kind": item["kind"], "recursive": bool(item.get("recursive", True))}
+            for item in index_sources if isinstance(item, dict) and item.get("path")
+            and item.get("kind") in {"file", "folder"}
+        ][:30]
     settings.recent_search_rule_files = normalize_recent_paths(
         data.get("recent_search_rule_files", []),
         max_recent_files,
@@ -110,6 +121,8 @@ def save_settings(path: Path, settings: AppSettings) -> None:
         "qpdf_bin_dir": settings.qpdf_bin_dir,
         "recent_files": settings.recent_files,
         "recent_search_rule_files": settings.recent_search_rule_files,
+        "recent_index_sources": settings.recent_index_sources,
+        "recent_search_terms": normalize_search_terms(settings.recent_search_terms),
         "save_incremental_safety_default": settings.save_incremental_safety_default,
         "anchor_page_basis": settings.anchor_page_basis,
         "search_page_size": settings.search_page_size,

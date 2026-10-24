@@ -3,13 +3,13 @@ from __future__ import annotations
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QThread
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication
 
 from app.main_window import dialogs as main_window_dialogs
 from app.main_window import docks as main_window_docks
 from app.search.annotation_search_query import AnnotationSearchQuery
-from app.services.index_worker import ReindexWorker
+from app.services.index_management import read_snapshot
 
 
 class SearchController:
@@ -17,34 +17,7 @@ class SearchController:
         self.window = window
 
     def reindex_current_pdf(self) -> None:
-        window = self.window
-        if window.doc is None or window.pdf_path is None:
-            return
-        if window.reindex_thread is not None:
-            return
-
-        pdf_path = window.pdf_path
-        window.reindex_pdf_path = pdf_path
-        extract_highlight_text = self.should_extract_highlight_text_for_index()
-        self.set_reindex_busy(True)
-        window.log_debug(
-            f"Reindex current PDF started: {pdf_path} "
-            f"extract_highlight_text={extract_highlight_text}"
-        )
-
-        window.reindex_thread = QThread(window)
-        window.reindex_worker = ReindexWorker(window.index_path(), pdf_path, extract_highlight_text)
-        window.reindex_worker.moveToThread(window.reindex_thread)
-        window.reindex_thread.started.connect(window.reindex_worker.run)
-        window.reindex_worker.progress.connect(window.on_reindex_progress)
-        window.reindex_worker.finished.connect(window.on_reindex_finished)
-        window.reindex_worker.failed.connect(window.on_reindex_failed)
-        window.reindex_worker.finished.connect(window.reindex_thread.quit)
-        window.reindex_worker.failed.connect(window.reindex_thread.quit)
-        window.reindex_worker.finished.connect(window.reindex_worker.deleteLater)
-        window.reindex_worker.failed.connect(window.reindex_worker.deleteLater)
-        window.reindex_thread.finished.connect(window.cleanup_reindex_thread)
-        window.reindex_thread.start()
+        self.window.index_management_controller.show()
 
     def should_extract_highlight_text_for_index(self) -> bool:
         return self.window.extract_highlight_text_on_reindex
@@ -107,29 +80,12 @@ class SearchController:
         window.update_actions()
 
     def clear_annotation_index(self) -> None:
-        window = self.window
-        if not main_window_dialogs.confirm_clear_annotation_index(window):
-            window.log_debug("Clear annotation index canceled by user")
-            return
-
-        try:
-            window.annotation_index.clear_all()
-            if window.annotation_search_widget is not None:
-                window.annotation_search_widget.reset_search_state()
-                window.annotation_search_widget.set_index_status("Annotation index is empty.", missing=True)
-            self.refresh_search_indexed_files()
-            self.refresh_index_database_info()
-            window.log_debug("Clear annotation index completed")
-            window.statusBar().showMessage("Annotation index cleared.")
-            main_window_dialogs.show_information(window, "Clear Annotation Index", "Annotation index cleared.")
-        except Exception as exc:
-            window.log_debug(f"Clear annotation index failed: {exc}")
-            window.show_error("Clear Annotation Index failed", exc)
+        self.window.index_management_controller.show()
 
     def show_index_database_info(self) -> None:
-        window = self.window
-        main_window_docks.show_index_database_info(window)
-        self.refresh_index_database_info()
+        manager = self.window.index_management_controller
+        manager.show()
+        manager.view.tabs.setCurrentIndex(1)
 
     def refresh_index_database_info(self) -> None:
         window = self.window
@@ -198,12 +154,17 @@ class SearchController:
         window = self.window
         if window.annotation_search_widget is None:
             return
-        documents = window.annotation_index.database_info()
-        files = [(document.path, document.file_name) for document in documents]
-        window.annotation_search_widget.set_indexed_files(files)
+        widget = window.annotation_search_widget
+        widget.refresh_sources = self.refresh_search_indexed_files
+        widget.set_indexed_sources(read_snapshot(window.index_path()))
 
     def search_annotations(self, keyword: str | AnnotationSearchQuery, app_type, document_paths=None) -> None:
         window = self.window
+        widget = window.annotation_search_widget
+        history_terms = ([input_box.text() for input_box in widget.include_inputs + widget.exclude_inputs]
+                         if widget is not None else
+                         keyword.include_terms() + keyword.exclude_terms()
+                         if isinstance(keyword, AnnotationSearchQuery) else [keyword])
         try:
             search_response = window.annotation_index.search_with_timing(
                 keyword,
@@ -228,13 +189,19 @@ class SearchController:
         except Exception as exc:
             window.log_debug(f"Search annotations failed: {exc}")
             window.show_error("Search Annotations failed", exc)
+            return
+        window.record_recent_search_terms(history_terms)
 
     def refresh_annotation_search_status(self) -> None:
         window = self.window
         if window.annotation_search_widget is None:
             return
         if window.pdf_path is None:
-            window.annotation_search_widget.set_index_status("No PDF open.", missing=True)
+            documents = window.annotation_index.database_info()
+            window.annotation_search_widget.set_index_status(
+                f"Indexed PDFs: {len(documents)}. Use Tools > Index Management to manage sources.",
+                missing=not documents,
+            )
             return
 
         try:
@@ -263,6 +230,8 @@ class SearchController:
 
     def jump_to_search_result(self, document_path: str, page_index: int, xref: int) -> None:
         window = self.window
+        for pane in window.reading_workspace.panes:
+            pane.canvas_controller.annotation_locator.stop()
         target_path = Path(document_path)
         if not target_path.exists():
             message = f"Search result PDF was not found:\n{target_path}"
@@ -287,11 +256,13 @@ class SearchController:
             return
 
         window.annotation_controller.clear_tool_interaction()
-        window.page_index = max(0, min(page_index, len(window.doc) - 1))
+        target_page = max(0, min(page_index, len(window.doc) - 1))
+        window.page_index = target_page
         if window.view_mode == "continuous":
             found = window.scroll_continuous_to_xref(window.page_index, xref)
             window.update_current_recent_page()
             if found:
+                self._select_and_flash_search_target(target_page, xref)
                 location = "new tab" if opened_new_tab else "existing tab"
                 window.statusBar().showMessage(f"Jumped to search result on page {window.page_index + 1}.")
                 window.log_debug(
@@ -315,6 +286,7 @@ class SearchController:
         window.update_current_recent_page()
         selected = window.select_annotation_by_xref(xref, render_page=False)
         if selected:
+            self._select_and_flash_search_target(target_page, xref)
             location = "new tab" if opened_new_tab else "existing tab"
             window.statusBar().showMessage(f"Jumped to search result on page {window.page_index + 1}.")
             window.log_debug(
@@ -329,3 +301,24 @@ class SearchController:
         window.statusBar().showMessage(message)
         window.defer_scroll_to_page_top_left()
         window.log_debug(f"Search result xref not found: {target_path} page={window.page_index + 1} xref={xref}")
+
+    def _select_and_flash_search_target(self, page_index: int, xref: int) -> None:
+        pane = self.window.reading_workspace.active
+        models = (pane.canvas_controller.continuous_load_page_annotations(page_index)
+                  if pane.view_mode == "continuous" else pane.current_annotations)
+        model = next((model for model in models
+                      if model.page_index == page_index and model.xref == xref), None)
+        if model is None:
+            return
+        if pane.view_mode == "continuous":
+            rect = pane.canvas_controller.continuous_annotation_scene_rect(model)
+            pane.view.centerOn(rect.center())
+            pane.canvas_controller.render_visible_continuous_pages()
+        else:
+            pane.view.centerOn(pane.canvas_controller.scene_rect(model.rect).center())
+        pane.page_index = page_index
+        pane.current_annotations = models
+        pane.annotation_model_map[model.id] = model
+        if model.is_supported:
+            pane.annotation_controller.select_annotation(model.id, center_on=False)
+        pane.canvas_controller.annotation_locator.show(model)

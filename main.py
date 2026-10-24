@@ -13,6 +13,8 @@ from app.controllers.canvas_controller import CanvasController
 from app.controllers.document_controller import DocumentController
 from app.controllers.navigation_controller import NavigationController
 from app.controllers.search_controller import SearchController
+from app.controllers.index_management_controller import IndexManagementController
+from app.controllers.bulk_annotation_controller import BulkAnnotationController
 from app.controllers.view_history_controller import ViewHistoryController
 from app.models.app_state import AppState
 from app.models.document_session import DocumentSession
@@ -47,6 +49,7 @@ from app.services.page_labels import page_index_for_label
 from app.services.page_labels import page_labels_json
 from app.services.page_labels import parse_page_labels_json
 from app.services.settings import AppSettings, load_settings, save_settings, settings_path
+from app.services.search_term_history import remember_search_terms
 from app.services.shortcuts import apply_shortcuts as apply_window_shortcuts
 from app.services.text_match import InvalidRegexError
 from app.services.ui_contrast import (
@@ -163,6 +166,8 @@ class MainWindow(QMainWindow):
         self.view_history_controller = ViewHistoryController(self)
         self.navigation_controller = NavigationController(self)
         self.search_controller = SearchController(self)
+        self.index_management_controller = IndexManagementController(self)
+        self.bulk_annotation_controller = BulkAnnotationController(self)
         self.reindex_thread: QThread | None = None
         self.reindex_worker: ReindexWorker | None = None
         self.reindex_pdf_path: Path | None = None
@@ -718,6 +723,8 @@ class MainWindow(QMainWindow):
         self.ui_contrast = settings.ui_contrast
         self.recent_files = settings.recent_files
         self.recent_search_rule_files = settings.recent_search_rule_files
+        self.recent_index_sources = settings.recent_index_sources
+        self.recent_search_terms = settings.recent_search_terms
         self.shortcuts = settings.shortcuts
 
     def save_app_settings(self) -> None:
@@ -740,9 +747,24 @@ class MainWindow(QMainWindow):
             ui_contrast=self.ui_contrast,
             recent_files=self.recent_files,
             recent_search_rule_files=self.recent_search_rule_files,
+            recent_index_sources=self.recent_index_sources,
+            recent_search_terms=self.recent_search_terms,
             shortcuts=self.shortcuts,
         )
         save_settings(self.settings_path(), settings)
+
+    def record_recent_search_terms(self, terms: list[str]) -> None:
+        host = getattr(self, "host_window", self)
+        updated = remember_search_terms(host.recent_search_terms, terms)
+        if updated == host.recent_search_terms:
+            return
+        host.recent_search_terms = updated
+        try:
+            host.save_app_settings()
+        except Exception as exc:
+            # Query results remain valid even if settings cannot be written.
+            host.log_debug(f"Could not save recent search terms: {exc}")
+            main_window_dialogs.show_warning(host, "最近输入", f"查询已完成，但最近输入无法保存到设置文件：\n{exc}")
 
     def apply_shortcuts(self) -> None:
         apply_window_shortcuts(self)
@@ -1713,6 +1735,11 @@ class MainWindow(QMainWindow):
                 self.batch_freetext_widget.set_message("Enter Including or Excluding text to find FreeText annotations.")
             return
 
+        history_terms = ([input_box.text() for input_box in
+                          self.batch_freetext_widget.include_inputs + self.batch_freetext_widget.exclude_inputs]
+                         if self.batch_freetext_widget is not None else
+                         [term.get("text", "") if isinstance(term, dict) else str(term)
+                          for term in include_terms] + exclude_terms)
         QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
             snapshot = self.ensure_freetext_snapshot()
@@ -1736,6 +1763,7 @@ class MainWindow(QMainWindow):
             return
         finally:
             QApplication.restoreOverrideCursor()
+        self.record_recent_search_terms(history_terms)
         scope_text = "current document" if scope == "current_document" else "current page"
         self.log_debug(
             "Batch FreeText find: "
@@ -2059,9 +2087,6 @@ class MainWindow(QMainWindow):
     def apply_batch_freetext_text_change(self, results: list[FreeTextMatch], transform, label: str) -> int:
         if self.doc is None:
             return 0
-        if self.view_mode == "continuous":
-            self.statusBar().showMessage("Continuous view is read-only. Switch to Single Page to edit Batch FreeText.")
-            return 0
         keyword = self.batch_freetext_keyword()
         if not keyword:
             main_window_dialogs.show_warning(self, "Batch FreeText", "Enter Replace target text before editing.")
@@ -2124,9 +2149,6 @@ class MainWindow(QMainWindow):
     def apply_batch_freetext_annotation_delete(self, results: list[FreeTextMatch], label: str) -> int:
         if self.doc is None:
             return 0
-        if self.view_mode == "continuous":
-            self.statusBar().showMessage("Continuous view is read-only. Switch to Single Page to delete Batch FreeText.")
-            return 0
 
         deleted = 0
         writer = PdfAnnotationWriter(self.doc)
@@ -2167,7 +2189,7 @@ class MainWindow(QMainWindow):
             return
         self.mark_dirty()
         self.clear_undo()
-        self.refresh_annotation_overlay(preserve_selection=True)
+        self.canvas_controller.refresh_after_batch_annotation_change(preserve_selection=True)
         self.refresh_properties_panel()
         self.statusBar().showMessage(f"{status_message} Use Save to persist.")
         if self.batch_freetext_widget is not None:
@@ -2186,7 +2208,7 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.clear_undo()
         self.selected_annotation_id = None
-        self.refresh_annotation_overlay(preserve_selection=False)
+        self.canvas_controller.refresh_after_batch_annotation_change(preserve_selection=False)
         self.refresh_annotations_table()
         self.refresh_properties_panel()
         self.statusBar().showMessage(f"{status_message} Use Save to persist.")
@@ -2807,6 +2829,12 @@ class MainWindow(QMainWindow):
         return self.annotation_controller.copy_selected_pdf_text_to_clipboard()
 
     def closeEvent(self, event) -> None:
+        if self.bulk_annotation_controller.busy:
+            event.ignore()
+            return
+        if not self.index_management_controller.can_close_app():
+            event.ignore()
+            return
         if not self.confirm_all_unsaved_for_exit():
             self.log_debug("Exit canceled by unsaved changes prompt")
             event.ignore()

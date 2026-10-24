@@ -59,6 +59,7 @@ ACTIVE_UI_METHODS = {
     "sync_table_selection",
 }
 HOST_METHODS = {
+    "record_recent_search_terms",
     "show_current_page_annotations", "show_annotation_properties", "show_navigation",
     "show_annotation_search", "show_debug_log", "show_index_database_info",
     "show_dock", "apply_ui_contrast", "set_ui_contrast", "save_app_settings",
@@ -238,12 +239,16 @@ class ReadingPane(QFrame):
             self._schedule_scroll_update()
 
     def _schedule_scroll_update(self):
+        if self.host_window.bulk_annotation_controller.rendering_suspended:
+            return
         if (self.doc is not None and self.view_mode == "continuous"
                 and not self.continuous_suppress_scroll_sync):
             self.continuous_scroll_timer.start()
 
     @Slot()
     def _on_scroll_timer(self):
+        if self.host_window.bulk_annotation_controller.rendering_suspended:
+            return
         if (self.doc is not None and self.view_mode == "continuous"
                 and not self.continuous_suppress_scroll_sync):
             self.canvas_controller.on_view_scrolled()

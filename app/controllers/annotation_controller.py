@@ -2028,6 +2028,9 @@ class AnnotationController:
 
     def select_annotation(self, annotation_id: str | None, center_on: bool = False) -> None:
         window = self.window
+        locator = window.canvas_controller.annotation_locator
+        if locator.target_id is not None and locator.target_id != annotation_id:
+            locator.stop()
         is_active = window.reading_workspace.active is window
         if annotation_id is not None and annotation_id not in window.annotation_model_map:
             return

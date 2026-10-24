@@ -65,6 +65,7 @@ class ReadingWorkspace(QSplitter):
         previous = self.active
         with self.sync.hold(), self.preserve_tool_mode():
             if previous is not None:
+                previous.canvas_controller.annotation_locator.stop()
                 if previous.inline_freetext_editor.is_active():
                     previous.inline_freetext_editor.accept_current()
                 previous.cancel_add_tool()
@@ -259,6 +260,7 @@ class ReadingWorkspace(QSplitter):
             target.document_controller.set_active_session(len(target.sessions) - 1, True)
 
     def clear_pane(self, pane):
+        pane.canvas_controller.annotation_locator.stop()
         pane.stop_continuous_scroll_timer()
         pane.active_session_index = None
         pane.state.document.doc = None

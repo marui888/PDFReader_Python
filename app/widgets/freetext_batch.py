@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from app.services.freetext_batch import FreeTextMatch
 from app.services.ui_contrast import table_contrast_stylesheet
+from app.widgets.recent_term_input import RecentTermLineEdit
 
 
 class FreeTextBatchWidget(QWidget):
@@ -47,7 +48,7 @@ class FreeTextBatchWidget(QWidget):
         self.include_mode_combo = QComboBox()
         self.include_mode_combo.addItem("AND", "and")
         self.include_mode_combo.addItem("OR", "or")
-        self.include_inputs = [QLineEdit() for _index in range(4)]
+        self.include_inputs = [RecentTermLineEdit(self) for _index in range(4)]
         for index, input_box in enumerate(self.include_inputs, start=1):
             input_box.setPlaceholderText(f"term{index}")
         self.include_whole_word_checks = [QCheckBox("W") for _index in range(4)]
@@ -63,7 +64,7 @@ class FreeTextBatchWidget(QWidget):
         self.exclude_mode_combo.addItem("AND", "and")
         self.exclude_mode_combo.addItem("OR", "or")
         self.exclude_mode_combo.setCurrentIndex(1)
-        self.exclude_inputs = [QLineEdit() for _index in range(2)]
+        self.exclude_inputs = [RecentTermLineEdit(self) for _index in range(2)]
         for index, input_box in enumerate(self.exclude_inputs, start=1):
             input_box.setPlaceholderText(f"term{index}")
 
@@ -276,6 +277,7 @@ class FreeTextBatchWidget(QWidget):
         self.status_label.setText(message)
 
     def set_read_only(self, read_only: bool) -> None:
+        """Availability depends on document/task state, not the reading mode."""
         for widget in (
             self.replace_selected_button,
             self.replace_all_button,
@@ -286,15 +288,6 @@ class FreeTextBatchWidget(QWidget):
             self.delete_all_annotations_button,
         ):
             widget.setEnabled(not read_only)
-        if read_only:
-            self.status_label.setText("Continuous view is read-only. Batch FreeText editing is disabled.")
-        elif self.status_label.text().startswith("Continuous view is read-only."):
-            if self.results:
-                match_count = sum(result.match_count for result in self.results)
-                match_text = str(match_count) if match_count > 0 else "-"
-                self.status_label.setText(f"FreeText: {len(self.results)} | Matches: {match_text}")
-            else:
-                self.status_label.setText("Enter text to find FreeText annotations.")
 
     def emit_result_activated(self) -> None:
         row = self.selected_row()
